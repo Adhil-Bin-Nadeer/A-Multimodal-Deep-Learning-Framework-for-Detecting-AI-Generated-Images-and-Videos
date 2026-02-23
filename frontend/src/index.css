@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-dark-bg text-white font-sans min-h-screen;
+    background-image: radial-gradient(circle at center, #0f1c3f 0%, #020617 100%);
+  }
+}
+
+@layer components {
+  /* Glassmorphism card */
+  .glass-card {
+    @apply bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl shadow-[0_4px_30px_rgba(0,0,0,0.5)];
+  }
+
+  /* Neon glow button */
+  .btn-neon {
+    @apply px-7 py-2.5 bg-transparent border border-neon-blue text-neon-blue rounded-full
+           font-semibold uppercase tracking-widest text-sm transition-all duration-300
+           shadow-[0_0_10px_rgba(0,242,255,0.1)] cursor-pointer
+           hover:bg-neon-blue hover:text-black hover:shadow-[0_0_20px_#00f2ff]
+           disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent
+           disabled:hover:text-neon-blue disabled:hover:shadow-none;
+  }
+
+  /* Processing step – pulsing blue border */
+  .step-processing {
+    @apply border-neon-blue text-neon-blue animate-pulse-neon;
+  }
+
+  /* Completed step – green border */
+  .step-completed {
+    @apply border-neon-green text-neon-green;
+  }
+
+  /* Flagged step – red border */
+  .step-flagged {
+    @apply border-neon-red text-neon-red;
+  }
+
+  /* Waiting step – dimmed */
+  .step-waiting {
+    @apply opacity-50 border-white/10 text-slate-400;
+  }
+
+  /* Console / log area */
+  .console-log {
+    @apply bg-black border border-white/10 rounded-lg p-4 h-28 overflow-y-auto
+           text-left font-mono text-sm text-neon-blue;
+  }
+}
+
+/* Conic-gradient score circle */
+.score-circle {
+  position: relative;
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.score-inner {
+  width: 130px;
+  height: 130px;
+  background: #020617;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  font-weight: bold;
+}
+
+/* Gradient heading text */
+.gradient-text {
+  background: linear-gradient(to right, #ffffff, #00f2ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 20px rgba(0, 242, 255, 0.3);
+}
