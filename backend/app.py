@@ -1,21 +1,28 @@
 import os
 import sys
 import time
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 
-# Add src to path for c2pa_checker import
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+# -------- PATH SETUP --------
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
+
+# Add backend/src to path for internal imports
+sys.path.insert(0, os.path.join(_BACKEND_DIR, 'src'))
 
 from c2pa_checker import check_c2pa
 from combine_model import AIEnsemblePredictor
 from forensic import generate_forensic_report
 
 # -------- CONFIG --------
-UPLOAD_FOLDER = 'uploads'
+UPLOAD_FOLDER = os.path.join(_BACKEND_DIR, 'uploads')
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 
-app = Flask(__name__, template_folder='templates', static_folder='static')
+# React build output lives at <project_root>/frontend/dist
+REACT_BUILD = os.path.join(_PROJECT_ROOT, 'frontend', 'dist')
+
+app = Flask(__name__, static_folder=REACT_BUILD, static_url_path='')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
@@ -38,19 +45,16 @@ def allowed_file(filename):
 
 
 # -------- ROUTES --------
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-
-@app.route('/dashboard')
-def dashboard():
-    return render_template('dashboard.html')
-
-
-@app.route('/report')
-def report():
-    return render_template('report.html')
+# Serve React SPA for all non-API routes
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve_react(path):
+    # Serve existing static asset if present (JS, CSS, icons, etc.)
+    full = os.path.join(REACT_BUILD, path)
+    if path and os.path.exists(full):
+        return send_from_directory(REACT_BUILD, path)
+    # Fall back to index.html so React Router handles the route
+    return send_from_directory(REACT_BUILD, 'index.html')
 
 
 @app.route('/api/analyze', methods=['POST'])
@@ -89,22 +93,19 @@ def analyze_image():
 
     try:
         # ========== LAYER 1: C2PA CHECK ==========
-        time.sleep(1.5)  # Simulated processing time
+        time.sleep(1.5)
         c2pa_result = check_c2pa(filepath)
         result['layers']['c2pa'] = c2pa_result
 
-        # Check if C2PA library is available on this platform
         if c2pa_result.get('available') == False:
             result['layers']['c2pa']['status'] = 'unavailable'
         
         if c2pa_result.get('c2pa_present'):
-            # C2PA metadata found - this means AI generated (AI tools add C2PA marks)
             result['confidence'] = 100.0
             result['is_ai_generated'] = True
             result['final_verdict'] = 'AI Generated (C2PA Verified)'
             result['layers']['c2pa']['status'] = 'verified'
             
-            # Skip other layers since we have cryptographic proof
             time.sleep(0.5)
             result['layers']['synthid'] = {'status': 'skipped', 'reason': 'C2PA verification successful'}
             time.sleep(0.5)
@@ -112,11 +113,11 @@ def analyze_image():
             
         else:
             # ========== LAYER 2: SYNTHID (SKIPPED) ==========
-            time.sleep(1.0)  # Simulated processing time
+            time.sleep(1.0)
             result['layers']['synthid'] = {'status': 'skipped', 'reason': 'Not implemented'}
             
             # ========== LAYER 3: AI MODEL ==========
-            time.sleep(2.0)  # Simulated model loading/inference time
+            time.sleep(2.0)
             if predictor is not None:
                 label, confidence = predictor.predict(filepath)
                 confidence_percent = confidence * 100
@@ -152,7 +153,7 @@ def analyze_image():
 @app.route('/api/forensic-report', methods=['POST'])
 def get_forensic_report():
     """
-    Generate an enhanced forensic report using Gemini AI.
+    Generate an enhanced forensic report using the forensic module.
     Expects the analysis result JSON in the request body.
     """
     try:

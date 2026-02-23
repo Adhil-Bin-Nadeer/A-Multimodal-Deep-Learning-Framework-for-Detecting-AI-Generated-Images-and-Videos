@@ -174,7 +174,6 @@ def _get_detection_method(layers: dict) -> str:
 
 # -------- CLI TESTING --------
 if __name__ == "__main__":
-    # Test with sample data
     sample_result = {
         "success": True,
         "filename": "test_image.jpg",

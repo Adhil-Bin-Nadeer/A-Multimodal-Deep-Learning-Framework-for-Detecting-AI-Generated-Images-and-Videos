@@ -8,10 +8,13 @@ import numpy as np
 import joblib
 
 # -------- CONFIG --------
-RESNET_PATH = "model_output/resnet50_finetuned_benchmark.pth"
+# Paths relative to the project root (one level up from backend/)
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RESNET_PATH = os.path.join(_BASE_DIR, "model_output", "resnet50_finetuned_benchmark.pth")
+META_LEARNER_PATH = os.path.join(_BASE_DIR, "ai_detector_meta_learner.joblib")
+POLY_TRANSFORM_PATH = os.path.join(_BASE_DIR, "polynomial_transformer.joblib")
+
 VIT_NAME = "dima806/ai_vs_real_image_detection"
-META_LEARNER_PATH = "ai_detector_meta_learner.joblib"  # Created by your previous script
-POLY_TRANSFORM_PATH = "polynomial_transformer.joblib"  # Created by your previous script
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class AIEnsemblePredictor:
@@ -65,47 +68,36 @@ class AIEnsemblePredictor:
             # --- ResNet Prediction ---
             res_input = self.res_transform(img).unsqueeze(0).to(self.device)
             res_logits = self.resnet(res_input)
-            # Get probability for Class 1 (AI)
             res_prob = torch.softmax(res_logits, dim=1)[0, 1].item()
 
             # --- ViT Prediction ---
             vit_inputs = self.vit_processor(images=img, return_tensors="pt").to(self.device)
             vit_logits = self.vit(**vit_inputs).logits
-            # Get probability for Class 1 (AI)
             vit_prob = torch.softmax(vit_logits, dim=1)[0, 1].item()
 
         # --- Meta-Learner Ensemble ---
-        # Stack scores: [ResNet_Score, ViT_Score]
         raw_scores = np.array([[res_prob, vit_prob]])
-        
-        # Polynomial Expansion (Degree 2)
         poly_features = self.poly.transform(raw_scores)
-        
-        # Final Prediction
-        # index 1 is usually the "Positive" class (AI) in sklearn if labeled that way during training
         final_ai_prob = self.meta_model.predict_proba(poly_features)[0, 1]
         
-        # Determine Label and confidence
-        # Confidence should reflect certainty of the prediction, not just AI probability
         if final_ai_prob > 0.5:
             label = "AI Image"
-            confidence = final_ai_prob  # How confident we are it's AI
+            confidence = final_ai_prob
         else:
             label = "Real Image"
-            confidence = 1 - final_ai_prob  # How confident we are it's Real
+            confidence = 1 - final_ai_prob
         
         return label, confidence
 
+
 # -------- EXECUTION --------
 if __name__ == "__main__":
-    # Initialize the predictor (loads models once)
     predictor = AIEnsemblePredictor()
 
     print("\n" + "="*40)
     print("🤖 SINGLE IMAGE DETECTOR READY")
     print("="*40)
 
-    # LOOP for easy testing
     while True:
         img_path = input("\nEnter path to image (or 'q' to quit): ").strip().strip('"')
         
@@ -117,10 +109,8 @@ if __name__ == "__main__":
         if label == "Error":
             print(f"❌ {score}")
         else:
-            # Color coding output
-            color = "\033[91m" if label == "AI Image" else "\033[92m" # Red for AI, Green for Real
+            color = "\033[91m" if label == "AI Image" else "\033[92m"
             reset = "\033[0m"
-            
             print(f"Prediction: {color}{label}{reset}")
             print(f"Confidence: {score*100:.2f}%")
             print("-" * 20)
