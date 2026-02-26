@@ -1,0 +1,26 @@
+======================================================
+TRAINING SESSION: 2026-02-08 18:15:30.595249
+======================================================
+Model: ResNet-50 (From Scratch)
+Learning Rate: 0.0001
+Batch Size: 128
+Device: cuda
+Dataset Stats:
+  Total: 1560980
+  Real: 936588
+  AI: 624392
+  Ratio: 1:1.5
+------------------------------------------------------
+[2026-02-08 18:39:03] STARTING SESSION | Total Samples: 1560980 | GPU: RTX 4060
+[2026-02-08 18:49:45] Starting Session | Batch: 128 | Effective: 256
+[2026-02-08 20:14:04] Epoch 1 Complete | Loss: 0.5746
+[2026-02-08 21:34:56] Epoch 2 Complete | Loss: 0.5043
+[2026-02-08 22:54:54] Epoch 3 Complete | Loss: 0.4316
+[2026-02-09 00:15:30] Epoch 4 Complete | Loss: 0.3701
+[2026-02-09 01:34:59] Epoch 5 Complete | Loss: 0.3249
+[2026-02-09 02:55:00] Epoch 6 Complete | Loss: 0.2866
+[2026-02-09 04:14:03] Epoch 7 Complete | Loss: 0.2544
+[2026-02-09 05:33:13] Epoch 8 Complete | Loss: 0.2271
+[2026-02-09 06:52:50] Epoch 9 Complete | Loss: 0.2053
+[2026-02-09 08:12:49] Epoch 10 Complete | Loss: 0.1912
+[2026-02-09 08:12:49] Training Complete.
