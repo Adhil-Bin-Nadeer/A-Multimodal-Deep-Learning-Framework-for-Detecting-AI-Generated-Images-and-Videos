@@ -12,9 +12,8 @@ backend_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(backend_dir)
 
 sys.path.insert(0, backend_dir)
-sys.path.insert(0, os.path.join(backend_dir, 'src'))
 
-from c2pa_checker import check_c2pa
+from src.c2pa_checker import check_c2pa, get_c2pa_runtime_status
 from combine_model import AIEnsemblePredictor
 from forensic import (
     build_image_forensic_summary,
@@ -23,7 +22,7 @@ from forensic import (
 )
 
 try:
-    from synthid import SynthIDService
+    from src.synthid import SynthIDService
     synthid_import_error = None
 except Exception as exc:
     SynthIDService = None
@@ -123,6 +122,24 @@ def video_report():
     return render_template('video_report.html')
 
 
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    c2pa_status = get_c2pa_runtime_status()
+    return jsonify(
+        {
+            'success': True,
+            'status': 'ok',
+            'python_executable': sys.executable,
+            'python_version': sys.version,
+            'models': {
+                'ai_predictor_loaded': predictor is not None,
+                'synthid_loaded': synthid_detector is not None and bool(getattr(synthid_detector, 'available', False)),
+            },
+            'c2pa': c2pa_status,
+        }
+    )
+
+
 @app.route('/api/analyze', methods=['POST'])
 def analyze_image():
     """
@@ -170,17 +187,20 @@ def analyze_image():
         else:
             result['layers']['c2pa']['status'] = 'not_found'
 
-        c2pa_declares_ai = c2pa_result.get('c2pa_present') and c2pa_result.get('ai_generated')
+        c2pa_metadata_present = bool(c2pa_result.get('c2pa_present'))
 
-        if c2pa_declares_ai:
+        if c2pa_metadata_present:
             result['confidence'] = 100.0
             result['is_ai_generated'] = True
-            result['final_verdict'] = 'AI Generated (C2PA Verified)'
+            if c2pa_result.get('ai_generated'):
+                result['final_verdict'] = 'AI Generated (C2PA AI Declaration)'
+            else:
+                result['final_verdict'] = 'AI Generated (C2PA Metadata Present)'
 
             time.sleep(0.5)
-            result['layers']['synthid'] = {'status': 'skipped', 'reason': 'C2PA verification successful'}
+            result['layers']['synthid'] = {'status': 'skipped', 'reason': 'C2PA metadata present'}
             time.sleep(0.5)
-            result['layers']['ai_model'] = {'status': 'skipped', 'reason': 'C2PA verification successful'}
+            result['layers']['ai_model'] = {'status': 'skipped', 'reason': 'C2PA metadata present'}
         else:
             # ========== LAYER 2: SYNTHID ==========
             time.sleep(1.0)

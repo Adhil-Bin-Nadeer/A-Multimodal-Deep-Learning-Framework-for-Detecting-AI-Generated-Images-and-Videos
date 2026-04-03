@@ -94,8 +94,8 @@ export default function Report() {
   // ── Layer 1 badge ──────────────────────────────────────────────────────────
   let l1Value = 'Not Found', l1Color = 'gray'
   if (c2pa?.c2pa_present) {
-    l1Value = c2pa.ai_generated ? 'AI Declared' : 'Verified'
-    l1Color = c2pa.ai_generated ? 'red' : 'green'
+    l1Value = c2pa.ai_generated ? 'AI Declared' : 'Metadata Present'
+    l1Color = 'red'
   }
 
   // ── Layer 2 badge ──────────────────────────────────────────────────────────
@@ -140,12 +140,12 @@ export default function Report() {
   const verdictBg     = isAI ? 'bg-neon-red/10'    : 'bg-neon-green/10'
   const verdictText   = isAI ? 'text-neon-red'      : 'text-neon-green'
   const verdictTitle  = isAI ? 'VERDICT: AI-GENERATED' : 'VERDICT: AUTHENTIC'
-  const verdictReason = c2pa?.c2pa_present && c2pa?.ai_generated
-    ? 'Source: C2PA signed manifest declaration of AI generation'
+  const verdictReason = c2pa?.c2pa_present
+    ? (c2pa?.ai_generated
+      ? 'Source: C2PA signed manifest declaration of AI generation'
+      : 'Source: C2PA signed metadata presence policy (treated as AI-generated)')
     : synthid?.status === 'complete' && synthid?.is_watermarked
       ? 'Source: SynthID watermark detection'
-    : c2pa?.c2pa_present
-      ? 'Source: C2PA provenance metadata + AI detection model analysis'
       : 'Source: AI detection model ensemble analysis'
 
   // ── Generate forensic report ───────────────────────────────────────────────

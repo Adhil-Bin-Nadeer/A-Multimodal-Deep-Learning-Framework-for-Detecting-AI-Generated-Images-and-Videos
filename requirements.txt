@@ -3,6 +3,7 @@
 # Web Framework
 flask
 werkzeug
+waitress
 
 # AI/ML
 torch
@@ -22,5 +23,5 @@ opencv-python
 onnx
 onnx2pytorch
 
-# C2PA (optional - requires system libraries)
-# c2pa  # Uncomment if deploying with system support for libexiv2
+# C2PA metadata reader
+c2pa-python

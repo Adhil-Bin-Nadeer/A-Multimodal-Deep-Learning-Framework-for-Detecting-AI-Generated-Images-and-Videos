@@ -34,21 +34,21 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Scan Video – placeholder */}
+          {/* Scan Video */}
           <div
             className="glass-card w-60 h-72 flex flex-col items-center justify-center
                        transition-all duration-300 hover:-translate-y-1.5
                        hover:border-neon-blue hover:shadow-[0_0_20px_rgba(0,242,255,0.2)]
-                       group cursor-default select-none"
+                       group cursor-pointer"
+            onClick={() => navigate('/video-dashboard')}
           >
             <span className="text-6xl mb-6">🎞️</span>
             <h3 className="text-lg font-semibold mb-4">Scan Video</h3>
             <button
               className="btn-neon group-hover:bg-neon-blue group-hover:text-black
                          group-hover:shadow-[0_0_20px_#00f2ff]"
-              disabled
             >
-              Coming Soon
+              Start Scan
             </button>
           </div>
         </div>

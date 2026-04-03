@@ -91,8 +91,10 @@
         confidenceScore.textContent = confidence.toFixed(1) + '%';
         confidenceScore.style.color = isAI ? 'var(--neon-red)' : 'var(--neon-green)';
 
-        if (result.layers?.c2pa?.c2pa_present && result.layers?.c2pa?.ai_generated) {
-            detectionMethod.textContent = 'C2PA';
+        if (result.layers?.c2pa?.c2pa_present) {
+            detectionMethod.textContent = result.layers?.c2pa?.ai_generated
+                ? 'C2PA'
+                : 'C2PA Metadata Presence Policy';
         } else if (result.layers?.synthid?.status === 'complete' && result.layers?.synthid?.is_watermarked) {
             detectionMethod.textContent = 'SynthID';
         } else if (result.layers?.ai_model?.status === 'complete') {

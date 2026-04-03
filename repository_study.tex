@@ -1,0 +1,364 @@
+﻿\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  pdftitle={DeepFake Defender Repository Study},
+  pdfauthor={Project Technical Study}
+}
+
+\setlist[itemize]{leftmargin=1.3em}
+\setlist[enumerate]{leftmargin=1.3em}
+
+\title{DeepFake Defender (AI Media Detection Tool)\\Detailed Repository Study: From Initial State to Final Working System}
+\author{Technical Project Record}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Purpose of This Document}
+This document records the full project journey from the early problem stage to the final working state. It explains:
+\begin{enumerate}
+  \item what the repository contains,
+  \item what problems were found,
+  \item what was changed,
+  \item why each change was made,
+  \item how the final system should be run and maintained.
+\end{enumerate}
+
+The writing is intentionally simple and direct, with no heavy wording.
+
+\section{Project Summary}
+DeepFake Defender is a multi-layer media analysis system for images and videos. It combines:
+\begin{enumerate}
+  \item signed provenance (C2PA),
+  \item watermark detection (SynthID),
+  \item visual model analysis (ResNet + ViT + forensic modules).
+\end{enumerate}
+
+The core design principle is to avoid one single detector. Higher-trust evidence is checked first, then lower layers run only when needed.
+
+\section{Initial State and Early Problems}
+At the beginning of the work, the system had important behavior issues:
+\begin{enumerate}
+  \item Real images were sometimes being marked as AI too aggressively.
+  \item SynthID-positive files could still continue to model layer, causing conflicting output.
+  \item C2PA appeared inconsistent because runtime process and active Python interpreter were not always the same.
+  \item UI text and forensic text could disagree with backend decisions.
+  \item React home page still showed video detection as ``Coming Soon''.
+\end{enumerate}
+
+These were not only quality issues. They also reduced trust in final output.
+
+\section{Project Goals and Constraints}
+Main goals during this work:
+\begin{enumerate}
+  \item Fix logical conflicts in the image decision pipeline.
+  \item Reduce false positives without removing core functionality.
+  \item Make C2PA behavior reliable and observable.
+  \item Keep both frontend and backend messages aligned.
+  \item Enable the missing React video flow.
+  \item Improve deployment and operations documentation for Windows users.
+\end{enumerate}
+
+Constraints:
+\begin{enumerate}
+  \item Keep existing working functionality intact.
+  \item Avoid risky redesign of model logic unless needed.
+  \item Prefer small, safe, testable changes.
+\end{enumerate}
+
+\section{Repository Structure and Roles}
+\subsection{Top-Level}
+\begin{itemize}
+  \item \texttt{backend/}: Flask app, model orchestration, forensic reporting, template UI.
+  \item \texttt{frontend/}: React app and route-based UI pages.
+  \item \texttt{model\_output/}: model and support artifacts.
+  \item \texttt{requirements.txt}: Python dependencies.
+  \item \texttt{README.md}, \texttt{deployment\_document.md}, \texttt{repository\_study.tex}: project and operations documentation.
+\end{itemize}
+
+\subsection{Key Backend Files}
+\begin{longtable}{p{0.30\textwidth} p{0.64\textwidth}}
+\toprule
+\textbf{File} & \textbf{Role} \\
+\midrule
+\endhead
+\texttt{backend/app.py} & Main orchestration for routes and final decision wiring. \\
+\texttt{backend/combine\_model.py} & Model fusion, thresholds, confidence logic, forensic-aware calibration. \\
+\texttt{backend/custom\_forensics.py} & Frequency, anatomy, entropy checks and score shaping. \\
+\texttt{backend/forensic.py} & Human-readable summary and report generation. \\
+\texttt{backend/src/c2pa\_checker.py} & C2PA runtime checks and manifest parsing. \\
+\texttt{backend/video\_detect\_standalone.py} & Video detection path plus fallback behavior. \\
+\texttt{backend/serve.py} & Waitress production entrypoint. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Key Frontend Files}
+\begin{longtable}{p{0.30\textwidth} p{0.64\textwidth}}
+\toprule
+\textbf{File} & \textbf{Role} \\
+\midrule
+\endhead
+\texttt{frontend/src/pages/Home.jsx} & Home selection (image and video). \\
+\texttt{frontend/src/pages/Dashboard.jsx} & Image scan dashboard. \\
+\texttt{frontend/src/pages/Report.jsx} & Image report output. \\
+\texttt{frontend/src/pages/VideoDashboard.jsx} & Video scan dashboard (added). \\
+\texttt{frontend/src/pages/VideoReport.jsx} & Video report page (added). \\
+\texttt{frontend/src/App.jsx} & React route registration. \\
+\texttt{frontend/vite.config.js} & Dev proxy setup to backend. \\
+\bottomrule
+\end{longtable}
+
+\section{Final Decision Architecture}
+\subsection{Image Pipeline (Final)}
+Final image logic is strict and layered:
+\begin{enumerate}
+  \item Layer 1: C2PA check.
+  \item Layer 2: SynthID check (if Layer 1 is not decisive).
+  \item Layer 3: AI model + forensic support (if still not decisive).
+\end{enumerate}
+
+Current policy:
+\begin{enumerate}
+  \item If any C2PA metadata is present, treat as AI-generated and skip lower layers.
+  \item If SynthID watermark is detected, treat as AI-generated and skip model layer.
+  \item Otherwise, run model layer and forensic checks.
+\end{enumerate}
+
+\subsection{Video Pipeline (Final)}
+\begin{enumerate}
+  \item Try dedicated video checkpoints first.
+  \item If missing or not usable, use frame-sampling fallback with image predictor.
+\end{enumerate}
+
+This keeps video detection available even when optional video checkpoints are absent.
+
+\section{Detailed Change Timeline (From Scratch to Final)}
+\subsection{Phase 1: Full Codebase Analysis}
+Actions:
+\begin{enumerate}
+  \item Read backend and frontend flows end-to-end.
+  \item Mapped each layer and route output.
+  \item Located mismatch points between backend decisions and frontend text.
+\end{enumerate}
+
+Result:
+\begin{enumerate}
+  \item A clear list of exact conflict locations was prepared before editing.
+\end{enumerate}
+
+\subsection{Phase 2: Pipeline Logic Corrections}
+Actions:
+\begin{enumerate}
+  \item Enforced SynthID short-circuit behavior.
+  \item Prevented layer-3 messaging when model was skipped.
+\end{enumerate}
+
+Result:
+\begin{enumerate}
+  \item Conflicting ``watermark detected but model still ran'' behavior was removed.
+\end{enumerate}
+
+\subsection{Phase 3: False Positive Reduction}
+Actions:
+\begin{enumerate}
+  \item Increased conservative behavior in threshold resolution.
+  \item Tightened forensic support requirements.
+  \item Added guardrails for weak-evidence model-only AI outcomes.
+\end{enumerate}
+
+Result:
+\begin{enumerate}
+  \item Real-image false positives were reduced while preserving AI detection capability.
+\end{enumerate}
+
+\subsection{Phase 4: C2PA Runtime Reliability Fix}
+Actions:
+\begin{enumerate}
+  \item Verified package installation and API compatibility.
+  \item Found mismatch between system Python process and virtual environment process.
+  \item Restarted backend with explicit virtual environment interpreter.
+\end{enumerate}
+
+Result:
+\begin{enumerate}
+  \item C2PA and entropy checks became consistent in live responses.
+\end{enumerate}
+
+\subsection{Phase 5: New C2PA Policy Change}
+Requested policy change:
+\begin{enumerate}
+  \item If signed C2PA metadata is present, treat as AI-generated even when manifest does not explicitly declare AI.
+\end{enumerate}
+
+Actions:
+\begin{enumerate}
+  \item Updated backend decision gate in \texttt{backend/app.py}.
+  \item Updated forensic summary text in \texttt{backend/forensic.py}.
+  \item Updated detection method labels in report outputs.
+  \item Updated frontend report explanations to match backend policy.
+\end{enumerate}
+
+Result:
+\begin{enumerate}
+  \item Backend, forensic text, and UI labels now match one policy.
+\end{enumerate}
+
+\subsection{Phase 6: C2PA Diagnostics Hardening}
+Actions:
+\begin{enumerate}
+  \item Improved C2PA import and runtime status handling.
+  \item Added \texttt{/api/health} endpoint with Python interpreter and C2PA diagnostics.
+\end{enumerate}
+
+Result:
+\begin{enumerate}
+  \item Runtime mismatch and package issues can now be diagnosed quickly.
+\end{enumerate}
+
+\subsection{Phase 7: React Video Flow Completion}
+Actions:
+\begin{enumerate}
+  \item Replaced ``Coming Soon'' video card in React home.
+  \item Added React video dashboard and video report pages.
+  \item Added routes for these pages in React router.
+  \item Fixed frontend development proxy to backend port 7860.
+\end{enumerate}
+
+Result:
+\begin{enumerate}
+  \item Both image and video flows are now functional in React UI.
+\end{enumerate}
+
+\subsection{Phase 8: Safe Codebase Organization}
+Actions:
+\begin{enumerate}
+  \item Added \texttt{backend/src/\_\_init\_\_.py} for cleaner package structure.
+  \item Added Windows helper scripts under \texttt{scripts/windows/}:
+  \begin{itemize}
+    \item \texttt{start-backend-dev.ps1}
+    \item \texttt{start-backend-prod.ps1}
+    \item \texttt{start-frontend-dev.ps1}
+    \item \texttt{health-check.ps1}
+  \end{itemize}
+\end{enumerate}
+
+Result:
+\begin{enumerate}
+  \item Startup is easier and less error-prone for Windows users.
+\end{enumerate}
+
+\subsection{Phase 9: Documentation Hardening}
+Actions:
+\begin{enumerate}
+  \item Rewrote README with clear version, dependency, setup, and troubleshooting guidance.
+  \item Rewrote deployment guide as Windows-first and free-hosting focused.
+  \item Expanded this LaTeX study to include full project history and final architecture.
+\end{enumerate}
+
+Result:
+\begin{enumerate}
+  \item Operations are easier and safer for future updates.
+\end{enumerate}
+
+\section{File-Level Change Record}
+\begin{longtable}{p{0.30\textwidth} p{0.64\textwidth}}
+\toprule
+\textbf{File} & \textbf{Final-purpose change} \\
+\midrule
+\endhead
+\texttt{backend/app.py} & Added health endpoint, C2PA metadata-presence policy, cleaned imports to package style. \\
+\texttt{backend/src/c2pa\_checker.py} & Added runtime diagnostics and robust parsing/error handling. \\
+\texttt{backend/forensic.py} & Updated C2PA wording and method labeling to align with new policy. \\
+\texttt{backend/templates/report.html} & Updated detection method text for C2PA policy consistency. \\
+\texttt{frontend/src/pages/Report.jsx} & Updated C2PA reason text and status display consistency. \\
+\texttt{frontend/src/pages/Home.jsx} & Enabled video card and removed placeholder behavior. \\
+\texttt{frontend/src/App.jsx} & Added video routes. \\
+\texttt{frontend/src/pages/VideoDashboard.jsx} & Added full video scan page and API call flow. \\
+\texttt{frontend/src/pages/VideoReport.jsx} & Added full video report page. \\
+\texttt{frontend/vite.config.js} & Updated dev API proxy target to port 7860. \\
+\texttt{backend/serve.py} & Added production server entrypoint with Waitress. \\
+\texttt{requirements.txt} & Added \texttt{waitress} and \texttt{c2pa-python}. \\
+\texttt{README.md} & Rewritten in detailed Windows-first format. \\
+\texttt{deployment\_document.md} & Rewritten for free deployment from Windows. \\
+\texttt{scripts/windows/*} & Added repeatable command scripts for day-to-day operations. \\
+\bottomrule
+\end{longtable}
+
+\section{Security and Stability Practices Applied}
+\begin{enumerate}
+  \item Development and production startup are separated.
+  \item Health endpoint gives runtime visibility without exposing private media data.
+  \item Temporary uploaded files are cleaned after processing.
+  \item Extension-based upload filtering remains in place.
+  \item Report text is synchronized with backend decisions to avoid user confusion.
+\end{enumerate}
+
+\section{Performance and Reliability Notes}
+\begin{enumerate}
+  \item Models load once at startup to reduce per-request overhead.
+  \item Free cloud hosting can still have cold-start delays.
+  \item Video fallback path keeps service working when dedicated checkpoints are missing.
+  \item Fewer conflicting decision paths improve user trust and operator debugging speed.
+\end{enumerate}
+
+\section{Windows Operations Guide (Short Form)}
+\subsection{Development}
+\begin{enumerate}
+  \item Run \texttt{scripts/windows/start-backend-dev.ps1}.
+  \item Run \texttt{scripts/windows/start-frontend-dev.ps1}.
+  \item Run \texttt{scripts/windows/health-check.ps1}.
+\end{enumerate}
+
+\subsection{Production-like Local Run}
+\begin{enumerate}
+  \item Run \texttt{scripts/windows/start-backend-prod.ps1}.
+  \item Validate \texttt{/api/health}, image scan, and video scan.
+\end{enumerate}
+
+\section{Validation Summary}
+Final validations included:
+\begin{enumerate}
+  \item backend syntax checks for modified Python files,
+  \item frontend production build success,
+  \item live API verification for \texttt{/api/health},
+  \item live forensic response verification for updated C2PA policy text,
+  \item route-level checks for both image and video flows.
+\end{enumerate}
+
+\section{Known Limits and Honest Expectations}
+\begin{enumerate}
+  \item Free deployment plans may sleep when idle.
+  \item Cold starts can slow the first request.
+  \item Large model artifacts must be present in runtime environment.
+  \item C2PA support can vary by cloud runtime packaging details.
+\end{enumerate}
+
+\section{Final Outcome}
+The final system now has:
+\begin{enumerate}
+  \item consistent decision logic across backend, forensic summaries, and UI,
+  \item reliable runtime diagnostics,
+  \item functional image and video flows in both backend templates and React,
+  \item safer and clearer Windows-first operational documentation,
+  \item organized helper scripts for daily use.
+\end{enumerate}
+
+In short, the project moved from partially conflicting behavior to a coherent, traceable, and deployment-ready state while keeping core functionality intact.
+
+\end{document}

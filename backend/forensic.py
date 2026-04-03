@@ -84,7 +84,7 @@ def build_image_forensic_summary(analysis_result: dict) -> dict:
     if c2pa.get('c2pa_present') and c2pa.get('ai_generated'):
         points.append("Signed C2PA metadata explicitly declared AI generation.")
     elif c2pa.get('c2pa_present'):
-        points.append("Signed C2PA metadata was present, but it did not itself declare AI generation.")
+        points.append("Signed C2PA metadata was present, and by current policy this is treated as AI-generated content.")
     elif c2pa.get('status') == 'unavailable' or c2pa.get('available') is False:
         points.append("C2PA provenance data could not be checked in this environment.")
     else:
@@ -232,8 +232,10 @@ def _get_detection_method(layers: dict) -> str:
     """Determine which detection method provided the result."""
     
     c2pa = layers.get('c2pa', {})
-    if c2pa.get('c2pa_present') and c2pa.get('ai_generated'):
-        return "C2PA Manifest AI Declaration"
+    if c2pa.get('c2pa_present'):
+        if c2pa.get('ai_generated'):
+            return "C2PA Manifest AI Declaration"
+        return "C2PA Metadata Presence Policy"
 
     synthid = layers.get('synthid', {})
     if synthid.get('status') == 'complete' and synthid.get('is_watermarked'):
@@ -243,9 +245,6 @@ def _get_detection_method(layers: dict) -> str:
     if ai_model.get('status') == 'complete':
         return "AI Detection Model (ResNet + ViT Ensemble)"
 
-    if c2pa.get('c2pa_present'):
-        return "C2PA Provenance Verification"
-    
     return "Unknown"
 
 
