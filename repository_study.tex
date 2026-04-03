@@ -9,19 +9,21 @@
 \usepackage{array}
 \usepackage{enumitem}
 \usepackage{xcolor}
+\usepackage{amsmath}
 
 \hypersetup{
   colorlinks=true,
   linkcolor=blue,
   urlcolor=blue,
-  pdftitle={DeepFake Defender Repository Study},
+  pdftitle={DeepFake Defender Repository Technical Handbook},
   pdfauthor={Project Technical Study}
 }
 
 \setlist[itemize]{leftmargin=1.3em}
 \setlist[enumerate]{leftmargin=1.3em}
+\newcommand{\fpath}[1]{\path{#1}}
 
-\title{DeepFake Defender (AI Media Detection Tool)\\Detailed Repository Study: From Initial State to Final Working System}
+\title{DeepFake Defender (AI Media Detection Tool)\\Comprehensive Repository Handbook\\Files, Change History, and Full Image/Video Runtime Flow}
 \author{Technical Project Record}
 \date{\today}
 
@@ -30,335 +32,739 @@
 \tableofcontents
 \newpage
 
-\section{Purpose of This Document}
-This document records the full project journey from the early problem stage to the final working state. It explains:
+\section{How to Use This Document}
+This handbook is written to answer project questions quickly and accurately.
+It is intentionally practical and plain.
+
+It covers four things in one place:
 \begin{enumerate}
-  \item what the repository contains,
-  \item what problems were found,
-  \item what was changed,
-  \item why each change was made,
-  \item how the final system should be run and maintained.
+  \item full repository file map,
+  \item full instruction-to-change history,
+  \item behind-the-scenes image and video runtime flow,
+  \item operations, validation, and troubleshooting guidance.
 \end{enumerate}
 
-The writing is intentionally simple and direct, with no heavy wording.
-
-\section{Project Summary}
-DeepFake Defender is a multi-layer media analysis system for images and videos. It combines:
+If someone asks ``what is happening internally'', the key sections are:
 \begin{enumerate}
-  \item signed provenance (C2PA),
-  \item watermark detection (SynthID),
-  \item visual model analysis (ResNet + ViT + forensic modules).
+  \item Section 6 (Image pipeline internals),
+  \item Section 7 (Core model and forensic internals),
+  \item Section 8 (Video pipeline internals),
+  \item Section 9 (Frontend runtime flow).
 \end{enumerate}
 
-The core design principle is to avoid one single detector. Higher-trust evidence is checked first, then lower layers run only when needed.
+\section{System Executive Summary}
+DeepFake Defender is a layered detector for both images and videos.
+It does not rely on one single model.
 
-\section{Initial State and Early Problems}
-At the beginning of the work, the system had important behavior issues:
+\subsection{Final Image Decision Order}
 \begin{enumerate}
-  \item Real images were sometimes being marked as AI too aggressively.
-  \item SynthID-positive files could still continue to model layer, causing conflicting output.
-  \item C2PA appeared inconsistent because runtime process and active Python interpreter were not always the same.
-  \item UI text and forensic text could disagree with backend decisions.
-  \item React home page still showed video detection as ``Coming Soon''.
+  \item C2PA signed metadata check,
+  \item SynthID watermark check,
+  \item AI model plus forensic calibration.
 \end{enumerate}
 
-These were not only quality issues. They also reduced trust in final output.
-
-\section{Project Goals and Constraints}
-Main goals during this work:
+Final policy currently implemented:
 \begin{enumerate}
-  \item Fix logical conflicts in the image decision pipeline.
-  \item Reduce false positives without removing core functionality.
-  \item Make C2PA behavior reliable and observable.
-  \item Keep both frontend and backend messages aligned.
-  \item Enable the missing React video flow.
-  \item Improve deployment and operations documentation for Windows users.
+  \item If C2PA metadata is present, classify as AI-generated and skip lower layers.
+  \item Else, if SynthID watermark is detected, classify as AI-generated and skip model layer.
+  \item Else, use model plus forensics with conservative thresholding.
 \end{enumerate}
 
-Constraints:
-\begin{enumerate}
-  \item Keep existing working functionality intact.
-  \item Avoid risky redesign of model logic unless needed.
-  \item Prefer small, safe, testable changes.
-\end{enumerate}
-
-\section{Repository Structure and Roles}
-\subsection{Top-Level}
-\begin{itemize}
-  \item \texttt{backend/}: Flask app, model orchestration, forensic reporting, template UI.
-  \item \texttt{frontend/}: React app and route-based UI pages.
-  \item \texttt{model\_output/}: model and support artifacts.
-  \item \texttt{requirements.txt}: Python dependencies.
-  \item \texttt{README.md}, \texttt{deployment\_document.md}, \texttt{repository\_study.tex}: project and operations documentation.
-\end{itemize}
-
-\subsection{Key Backend Files}
-\begin{longtable}{p{0.30\textwidth} p{0.64\textwidth}}
-\toprule
-\textbf{File} & \textbf{Role} \\
-\midrule
-\endhead
-\texttt{backend/app.py} & Main orchestration for routes and final decision wiring. \\
-\texttt{backend/combine\_model.py} & Model fusion, thresholds, confidence logic, forensic-aware calibration. \\
-\texttt{backend/custom\_forensics.py} & Frequency, anatomy, entropy checks and score shaping. \\
-\texttt{backend/forensic.py} & Human-readable summary and report generation. \\
-\texttt{backend/src/c2pa\_checker.py} & C2PA runtime checks and manifest parsing. \\
-\texttt{backend/video\_detect\_standalone.py} & Video detection path plus fallback behavior. \\
-\texttt{backend/serve.py} & Waitress production entrypoint. \\
-\bottomrule
-\end{longtable}
-
-\subsection{Key Frontend Files}
-\begin{longtable}{p{0.30\textwidth} p{0.64\textwidth}}
-\toprule
-\textbf{File} & \textbf{Role} \\
-\midrule
-\endhead
-\texttt{frontend/src/pages/Home.jsx} & Home selection (image and video). \\
-\texttt{frontend/src/pages/Dashboard.jsx} & Image scan dashboard. \\
-\texttt{frontend/src/pages/Report.jsx} & Image report output. \\
-\texttt{frontend/src/pages/VideoDashboard.jsx} & Video scan dashboard (added). \\
-\texttt{frontend/src/pages/VideoReport.jsx} & Video report page (added). \\
-\texttt{frontend/src/App.jsx} & React route registration. \\
-\texttt{frontend/vite.config.js} & Dev proxy setup to backend. \\
-\bottomrule
-\end{longtable}
-
-\section{Final Decision Architecture}
-\subsection{Image Pipeline (Final)}
-Final image logic is strict and layered:
-\begin{enumerate}
-  \item Layer 1: C2PA check.
-  \item Layer 2: SynthID check (if Layer 1 is not decisive).
-  \item Layer 3: AI model + forensic support (if still not decisive).
-\end{enumerate}
-
-Current policy:
-\begin{enumerate}
-  \item If any C2PA metadata is present, treat as AI-generated and skip lower layers.
-  \item If SynthID watermark is detected, treat as AI-generated and skip model layer.
-  \item Otherwise, run model layer and forensic checks.
-\end{enumerate}
-
-\subsection{Video Pipeline (Final)}
+\subsection{Final Video Decision Order}
 \begin{enumerate}
   \item Try dedicated video checkpoints first.
-  \item If missing or not usable, use frame-sampling fallback with image predictor.
+  \item If unavailable, fallback to frame-sampling using the image predictor.
 \end{enumerate}
 
-This keeps video detection available even when optional video checkpoints are absent.
+\section{Instruction-to-Implementation Timeline}
+This section maps user requests to concrete changes.
 
-\section{Detailed Change Timeline (From Scratch to Final)}
-\subsection{Phase 1: Full Codebase Analysis}
-Actions:
-\begin{enumerate}
-  \item Read backend and frontend flows end-to-end.
-  \item Mapped each layer and route output.
-  \item Located mismatch points between backend decisions and frontend text.
-\end{enumerate}
-
-Result:
-\begin{enumerate}
-  \item A clear list of exact conflict locations was prepared before editing.
-\end{enumerate}
-
-\subsection{Phase 2: Pipeline Logic Corrections}
-Actions:
-\begin{enumerate}
-  \item Enforced SynthID short-circuit behavior.
-  \item Prevented layer-3 messaging when model was skipped.
-\end{enumerate}
-
-Result:
-\begin{enumerate}
-  \item Conflicting ``watermark detected but model still ran'' behavior was removed.
-\end{enumerate}
-
-\subsection{Phase 3: False Positive Reduction}
-Actions:
-\begin{enumerate}
-  \item Increased conservative behavior in threshold resolution.
-  \item Tightened forensic support requirements.
-  \item Added guardrails for weak-evidence model-only AI outcomes.
-\end{enumerate}
-
-Result:
-\begin{enumerate}
-  \item Real-image false positives were reduced while preserving AI detection capability.
-\end{enumerate}
-
-\subsection{Phase 4: C2PA Runtime Reliability Fix}
-Actions:
-\begin{enumerate}
-  \item Verified package installation and API compatibility.
-  \item Found mismatch between system Python process and virtual environment process.
-  \item Restarted backend with explicit virtual environment interpreter.
-\end{enumerate}
-
-Result:
-\begin{enumerate}
-  \item C2PA and entropy checks became consistent in live responses.
-\end{enumerate}
-
-\subsection{Phase 5: New C2PA Policy Change}
-Requested policy change:
-\begin{enumerate}
-  \item If signed C2PA metadata is present, treat as AI-generated even when manifest does not explicitly declare AI.
-\end{enumerate}
-
-Actions:
-\begin{enumerate}
-  \item Updated backend decision gate in \texttt{backend/app.py}.
-  \item Updated forensic summary text in \texttt{backend/forensic.py}.
-  \item Updated detection method labels in report outputs.
-  \item Updated frontend report explanations to match backend policy.
-\end{enumerate}
-
-Result:
-\begin{enumerate}
-  \item Backend, forensic text, and UI labels now match one policy.
-\end{enumerate}
-
-\subsection{Phase 6: C2PA Diagnostics Hardening}
-Actions:
-\begin{enumerate}
-  \item Improved C2PA import and runtime status handling.
-  \item Added \texttt{/api/health} endpoint with Python interpreter and C2PA diagnostics.
-\end{enumerate}
-
-Result:
-\begin{enumerate}
-  \item Runtime mismatch and package issues can now be diagnosed quickly.
-\end{enumerate}
-
-\subsection{Phase 7: React Video Flow Completion}
-Actions:
-\begin{enumerate}
-  \item Replaced ``Coming Soon'' video card in React home.
-  \item Added React video dashboard and video report pages.
-  \item Added routes for these pages in React router.
-  \item Fixed frontend development proxy to backend port 7860.
-\end{enumerate}
-
-Result:
-\begin{enumerate}
-  \item Both image and video flows are now functional in React UI.
-\end{enumerate}
-
-\subsection{Phase 8: Safe Codebase Organization}
-Actions:
-\begin{enumerate}
-  \item Added \texttt{backend/src/\_\_init\_\_.py} for cleaner package structure.
-  \item Added Windows helper scripts under \texttt{scripts/windows/}:
-  \begin{itemize}
-    \item \texttt{start-backend-dev.ps1}
-    \item \texttt{start-backend-prod.ps1}
-    \item \texttt{start-frontend-dev.ps1}
-    \item \texttt{health-check.ps1}
-  \end{itemize}
-\end{enumerate}
-
-Result:
-\begin{enumerate}
-  \item Startup is easier and less error-prone for Windows users.
-\end{enumerate}
-
-\subsection{Phase 9: Documentation Hardening}
-Actions:
-\begin{enumerate}
-  \item Rewrote README with clear version, dependency, setup, and troubleshooting guidance.
-  \item Rewrote deployment guide as Windows-first and free-hosting focused.
-  \item Expanded this LaTeX study to include full project history and final architecture.
-\end{enumerate}
-
-Result:
-\begin{enumerate}
-  \item Operations are easier and safer for future updates.
-\end{enumerate}
-
-\section{File-Level Change Record}
-\begin{longtable}{p{0.30\textwidth} p{0.64\textwidth}}
+\begin{longtable}{p{0.23\textwidth} p{0.29\textwidth} p{0.24\textwidth} p{0.18\textwidth}}
 \toprule
-\textbf{File} & \textbf{Final-purpose change} \\
+\textbf{Instruction/Need} & \textbf{Implementation} & \textbf{Main Files} & \textbf{Outcome} \\
 \midrule
 \endhead
-\texttt{backend/app.py} & Added health endpoint, C2PA metadata-presence policy, cleaned imports to package style. \\
-\texttt{backend/src/c2pa\_checker.py} & Added runtime diagnostics and robust parsing/error handling. \\
-\texttt{backend/forensic.py} & Updated C2PA wording and method labeling to align with new policy. \\
-\texttt{backend/templates/report.html} & Updated detection method text for C2PA policy consistency. \\
-\texttt{frontend/src/pages/Report.jsx} & Updated C2PA reason text and status display consistency. \\
-\texttt{frontend/src/pages/Home.jsx} & Enabled video card and removed placeholder behavior. \\
-\texttt{frontend/src/App.jsx} & Added video routes. \\
-\texttt{frontend/src/pages/VideoDashboard.jsx} & Added full video scan page and API call flow. \\
-\texttt{frontend/src/pages/VideoReport.jsx} & Added full video report page. \\
-\texttt{frontend/vite.config.js} & Updated dev API proxy target to port 7860. \\
-\texttt{backend/serve.py} & Added production server entrypoint with Waitress. \\
-\texttt{requirements.txt} & Added \texttt{waitress} and \texttt{c2pa-python}. \\
-\texttt{README.md} & Rewritten in detailed Windows-first format. \\
-\texttt{deployment\_document.md} & Rewritten for free deployment from Windows. \\
-\texttt{scripts/windows/*} & Added repeatable command scripts for day-to-day operations. \\
+Fix contradictory image outputs & Enforced strict short-circuit behavior between layers & \fpath{backend/app.py} & No ``watermark detected but model still used'' contradiction \\
+
+Reduce false positives on real images & Added conservative threshold logic and weak-evidence override guardrail & \fpath{backend/combine_model.py}, \fpath{backend/app.py} & Better precision for borderline real images \\
+
+Make C2PA reliable at runtime & Added runtime diagnostics and explicit health visibility & \fpath{backend/src/c2pa_checker.py}, \fpath{backend/app.py} & Fast diagnosis of package/runtime mismatch \\
+
+Apply new policy for signed metadata & Any C2PA metadata presence now triggers AI decision & \fpath{backend/app.py}, \fpath{backend/forensic.py}, \fpath{frontend/src/pages/Report.jsx}, \fpath{backend/templates/report.html} & Policy consistency across backend and UI \\
+
+Align forensic text with backend logic & Reworked summary method names and policy wording & \fpath{backend/forensic.py}, \fpath{frontend/src/pages/Report.jsx}, \fpath{backend/templates/report.html} & Output text now explains the real decision path \\
+
+Complete React video flow & Added video dashboard/report pages and routes & \fpath{frontend/src/pages/VideoDashboard.jsx}, \fpath{frontend/src/pages/VideoReport.jsx}, \fpath{frontend/src/App.jsx}, \fpath{frontend/src/pages/Home.jsx} & Video detection fully available in React \\
+
+Fix frontend-to-backend API routing & Updated Vite proxy target to backend port 7860 & \fpath{frontend/vite.config.js} & Stable local API calls from React \\
+
+Support production backend serving & Added Waitress production entrypoint & \fpath{backend/serve.py}, \fpath{requirements.txt} & Safer production-like runtime than Flask dev server \\
+
+Make Windows operations repeatable & Added startup and health scripts & \fpath{scripts/windows/start-backend-dev.ps1}, \fpath{scripts/windows/start-backend-prod.ps1}, \fpath{scripts/windows/start-frontend-dev.ps1}, \fpath{scripts/windows/health-check.ps1} & Lower operator error rate \\
+
+Create complete project documentation & Reworked README, deployment guide, and this handbook & \fpath{README.md}, \fpath{deployment_document.md}, \fpath{repository_study.tex} & Easier handover and presentation \\
 \bottomrule
 \end{longtable}
 
-\section{Security and Stability Practices Applied}
+\section{Complete Repository File Map}
+This is the full file inventory (excluding dependency/build trees like \fpath{frontend/node_modules} and cache folders).
+
+\subsection{Root Files}
+\begin{longtable}{p{0.42\textwidth} p{0.52\textwidth}}
+\toprule
+\textbf{File} & \textbf{Purpose} \\
+\midrule
+\endhead
+\fpath{.gitignore} & Ignore virtual envs, caches, build outputs, and large model/checkpoint patterns. \\
+\fpath{LICENSE} & MIT license text for the project. \\
+\fpath{README.md} & Main operator and developer guide, Windows-first. \\
+\fpath{deployment_document.md} & Deployment playbook for free hosting and troubleshooting. \\
+\fpath{repository_study.tex} & This complete technical handbook. \\
+\fpath{requirements.txt} & Python dependencies for backend/model runtime. \\
+\fpath{ai_detector_meta_learner.joblib} & Optional meta-learner model for image score fusion. \\
+\fpath{polynomial_transformer.joblib} & Polynomial feature transformer used by meta-learner fusion. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Backend Core and API Files}
+\begin{longtable}{p{0.42\textwidth} p{0.52\textwidth}}
+\toprule
+\textbf{File} & \textbf{Purpose} \\
+\midrule
+\endhead
+\fpath{backend/app.py} & Main Flask app, routes, image/video orchestration, runtime model loading, health endpoint. \\
+\fpath{backend/serve.py} & Production entrypoint using Waitress server and environment variables. \\
+\fpath{backend/combine_model.py} & Image model ensemble: ResNet + ViT + optional meta learner + forensic-aware calibration. \\
+\fpath{backend/custom_forensics.py} & Forensic signal analyzers: frequency, anatomy, entropy, and score calibration logic. \\
+\fpath{backend/forensic.py} & Builds user-facing forensic summaries and text reports. \\
+\fpath{backend/video_detect_standalone.py} & Video prediction path with dedicated checkpoint first, then frame fallback. \\
+\fpath{backend/manifests/manifest.json} & Example C2PA-style manifest payload used for reference/testing. \\
+\fpath{backend/uploads/.gitkeep} & Keeps uploads folder structure in version control. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Backend Source Package Files}
+\begin{longtable}{p{0.42\textwidth} p{0.52\textwidth}}
+\toprule
+\textbf{File} & \textbf{Purpose} \\
+\midrule
+\endhead
+\fpath{backend/src/__init__.py} & Marks src as Python package for cleaner imports. \\
+\fpath{backend/src/c2pa_checker.py} & C2PA availability status and manifest extraction/parsing logic. \\
+\fpath{backend/src/synthid/__init__.py} & Exposes SynthIDService for import. \\
+\fpath{backend/src/synthid/service.py} & Wrapper service to run robust SynthID detection and normalize outputs. \\
+\fpath{backend/src/synthid/robust_extractor.py} & Full robust SynthID extraction/detection engine. \\
+\fpath{backend/src/extraction/synthid_codebook_extractor.py} & Utility script to extract/save SynthID codebook from reference images. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Backend Template UI and Static Assets}
+\begin{longtable}{p{0.42\textwidth} p{0.52\textwidth}}
+\toprule
+\textbf{File} & \textbf{Purpose} \\
+\midrule
+\endhead
+\fpath{backend/templates/index.html} & Landing page with image/video options for template UI. \\
+\fpath{backend/templates/dashboard.html} & Image upload/scan page with 3-step progress cards. \\
+\fpath{backend/templates/report.html} & Image result page with verdict, method, and forensic summary. \\
+\fpath{backend/templates/video_dashboard.html} & Video upload/scan page for template UI. \\
+\fpath{backend/templates/video_report.html} & Video result page and forensic summary display. \\
+\fpath{backend/static/scripts.js} & Template-side image upload flow, API call, log updates, and report navigation. \\
+\fpath{backend/static/style.css} & Shared neon/glass styling and state classes for template UI. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Frontend React/Vite Files}
+\begin{longtable}{p{0.42\textwidth} p{0.52\textwidth}}
+\toprule
+\textbf{File} & \textbf{Purpose} \\
+\midrule
+\endhead
+\fpath{frontend/index.html} & React root HTML and Google font preload. \\
+\fpath{frontend/package.json} & Frontend dependencies/scripts (React, router, Vite, Tailwind). \\
+\fpath{frontend/package-lock.json} & Exact dependency lock file for deterministic installs. \\
+\fpath{frontend/vite.config.js} & Dev server and /api proxy to backend on localhost:7860. \\
+\fpath{frontend/tailwind.config.js} & Tailwind theme extension (colors, animations, fonts). \\
+\fpath{frontend/postcss.config.js} & PostCSS pipeline for Tailwind and autoprefixer. \\
+\fpath{frontend/src/main.jsx} & React root render with BrowserRouter. \\
+\fpath{frontend/src/App.jsx} & Route table for all app pages. \\
+\fpath{frontend/src/index.css} & Tailwind imports and custom component classes. \\
+\fpath{frontend/src/pages/Home.jsx} & React landing page with image/video cards. \\
+\fpath{frontend/src/pages/Dashboard.jsx} & React image scanner with progress and logging. \\
+\fpath{frontend/src/pages/Report.jsx} & React image report and forensic report generation request. \\
+\fpath{frontend/src/pages/VideoDashboard.jsx} & React video scanner page and API orchestration. \\
+\fpath{frontend/src/pages/VideoReport.jsx} & React video result page and forensic summary view. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Model and Training Artifact Files}
+\begin{longtable}{p{0.42\textwidth} p{0.52\textwidth}}
+\toprule
+\textbf{File} & \textbf{Purpose} \\
+\midrule
+\endhead
+\fpath{model_output/resnet50_final.pth} & ResNet training artifact retained in repository storage area. \\
+\fpath{model_output/resnet50_finetuned_benchmark.pth} & Main runtime ResNet checkpoint consumed by backend predictor. \\
+\fpath{model_output/training_summary.txt} & Training metadata, dataset counts, and epoch loss history. \\
+\fpath{model_output/synthid/robust_codebook.pkl} & Runtime SynthID codebook required by robust extractor. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Windows Operation Script Files}
+\begin{longtable}{p{0.42\textwidth} p{0.52\textwidth}}
+\toprule
+\textbf{File} & \textbf{Purpose} \\
+\midrule
+\endhead
+\fpath{scripts/windows/start-backend-dev.ps1} & Start Flask backend using repository virtual environment interpreter. \\
+\fpath{scripts/windows/start-backend-prod.ps1} & Start Waitress backend with configurable port/thread count. \\
+\fpath{scripts/windows/start-frontend-dev.ps1} & Start Vite frontend dev server. \\
+\fpath{scripts/windows/health-check.ps1} & Query and print backend health endpoint JSON. \\
+\bottomrule
+\end{longtable}
+
+\section{Runtime Architecture and Boot Sequence}
+\subsection{Backend Startup Sequence}
+When \fpath{backend/app.py} starts:
 \begin{enumerate}
-  \item Development and production startup are separated.
-  \item Health endpoint gives runtime visibility without exposing private media data.
-  \item Temporary uploaded files are cleaned after processing.
-  \item Extension-based upload filtering remains in place.
-  \item Report text is synchronized with backend decisions to avoid user confusion.
+  \item it computes backend and project paths,
+  \item configures upload folder and max request size,
+  \item attempts to load \texttt{AIEnsemblePredictor()} once,
+  \item attempts to load \texttt{SynthIDService} once,
+  \item exposes routes for template pages and API endpoints.
 \end{enumerate}
 
-\section{Performance and Reliability Notes}
+This startup strategy keeps inference per request faster because heavy model objects are loaded once, not for every upload.
+
+\subsection{Health Endpoint Contract}
+\fpath{/api/health} returns:
 \begin{enumerate}
-  \item Models load once at startup to reduce per-request overhead.
-  \item Free cloud hosting can still have cold-start delays.
-  \item Video fallback path keeps service working when dedicated checkpoints are missing.
-  \item Fewer conflicting decision paths improve user trust and operator debugging speed.
+  \item Python executable path and version,
+  \item model load state for AI predictor and SynthID detector,
+  \item C2PA runtime availability, Reader API presence, and import error (if any).
 \end{enumerate}
 
-\section{Windows Operations Guide (Short Form)}
-\subsection{Development}
+This directly solves environment mismatch debugging.
+
+\section{Image Pipeline: Behind-the-Scenes Full Flow}
+This section describes exactly what happens after image upload.
+
+\subsection{Request Entry and Safety Checks}
+Endpoint: \fpath{/api/analyze} (POST).
+
+The backend validates:
 \begin{enumerate}
-  \item Run \texttt{scripts/windows/start-backend-dev.ps1}.
-  \item Run \texttt{scripts/windows/start-frontend-dev.ps1}.
-  \item Run \texttt{scripts/windows/health-check.ps1}.
+  \item file key exists in multipart request,
+  \item filename is not empty,
+  \item extension is allowed (png, jpg, jpeg, webp),
+  \item payload size remains under 16MB.
 \end{enumerate}
 
-\subsection{Production-like Local Run}
+If checks pass, the file is saved using a UUID-based temporary name in \fpath{backend/uploads}.
+
+\subsection{Result Object Initialization}
+Before layer execution, backend builds a fixed response shape:
 \begin{enumerate}
-  \item Run \texttt{scripts/windows/start-backend-prod.ps1}.
-  \item Validate \texttt{/api/health}, image scan, and video scan.
+  \item \texttt{layers.c2pa}, \texttt{layers.synthid}, \texttt{layers.ai_model},
+  \item \texttt{final_verdict}, \texttt{confidence}, \texttt{is_ai_generated},
+  \item optional \texttt{explainability} and later \texttt{forensic_summary}.
 \end{enumerate}
 
-\section{Validation Summary}
-Final validations included:
+This stable contract helps both template and React frontends render consistent UI.
+
+\subsection{Layer 1: C2PA}
+The backend calls \texttt{check_c2pa(filepath)}.
+
+Status logic:
 \begin{enumerate}
-  \item backend syntax checks for modified Python files,
-  \item frontend production build success,
-  \item live API verification for \texttt{/api/health},
-  \item live forensic response verification for updated C2PA policy text,
-  \item route-level checks for both image and video flows.
+  \item if C2PA package unavailable: status becomes \texttt{unavailable},
+  \item if manifest present: status \texttt{verified} when valid, else \texttt{present},
+  \item if no manifest: status \texttt{not_found}.
 \end{enumerate}
+
+Decision gate:
+\begin{enumerate}
+  \item if \texttt{c2pa_present = true}, backend sets confidence to 100,
+  \item sets \texttt{is_ai_generated = true},
+  \item sets verdict as either ``AI Generated (C2PA AI Declaration)'' or ``AI Generated (C2PA Metadata Present)'',
+  \item marks SynthID and AI model layers as skipped.
+\end{enumerate}
+
+So C2PA presence is decisive by policy.
+
+\subsection{Layer 2: SynthID}
+Only executed when C2PA metadata is not present.
+
+Flow:
+\begin{enumerate}
+  \item call \texttt{synthid_detector.analyze(filepath)},
+  \item if status complete and watermark detected: final verdict becomes ``AI Generated (SynthID Watermark Detected)'',
+  \item AI model layer is skipped,
+  \item if negative/unavailable/error: continue to model layer decision path.
+\end{enumerate}
+
+\subsection{Layer 3: AI Model + Forensics}
+Only executed when neither C2PA nor SynthID has already produced an AI-positive decisive result.
+
+Flow:
+\begin{enumerate}
+  \item call \texttt{predictor.predict(filepath, return_details=True)},
+  \item include model scores, forensic module scores, and artifacts in response,
+  \item compute final label from calibrated threshold logic,
+  \item optionally apply pipeline override for weak AI-only evidence.
+\end{enumerate}
+
+\subsection{Important Low-Confidence Override Rule}
+In \fpath{backend/app.py}, if all of these are true:
+\begin{enumerate}
+  \item model label is AI Image,
+  \item model confidence is below 60,
+  \item no forensic support modules,
+  \item forensics-only score below 45,
+  \item SynthID is complete and negative,
+\end{enumerate}
+then backend overrides to Real Image.
+
+This guardrail is critical for reducing false positives.
+
+\subsection{Forensic Summary and Cleanup}
+After layer logic:
+\begin{enumerate}
+  \item backend generates \texttt{forensic_summary} with human-readable points,
+  \item temporary upload file is removed in \texttt{finally},
+  \item complete JSON result is returned to frontend.
+\end{enumerate}
+
+\section{Core Module Internals (Image Path)}
+\subsection{C2PA Internals: \fpath{backend/src/c2pa_checker.py}}
+Key technical behavior:
+\begin{enumerate}
+  \item import-time C2PA flags: \texttt{C2PA_AVAILABLE}, \texttt{C2PA_IMPORT_ERROR},
+  \item runtime status helper \texttt{get_c2pa_runtime_status()},
+  \item robust manifest parsing from dict or JSON string,
+  \item AI assertion extraction scans \texttt{c2pa.actions} for \texttt{trainedalgorithmicmedia} digital source type.
+\end{enumerate}
+
+Return object includes:
+\begin{enumerate}
+  \item \texttt{c2pa_present}, \texttt{available}, \texttt{valid}, \texttt{issuer},
+  \item \texttt{ai_generated} when explicit declaration exists,
+  \item \texttt{raw_data} for deeper inspection.
+\end{enumerate}
+
+\subsection{SynthID Service Internals: \fpath{backend/src/synthid/service.py}}
+Service responsibilities:
+\begin{enumerate}
+  \item verify codebook exists at startup,
+  \item initialize robust extractor,
+  \item normalize detector output fields and confidence to percentage,
+  \item provide health metadata for debugging.
+\end{enumerate}
+
+Output includes advanced fields:
+\begin{enumerate}
+  \item \texttt{correlation}, \texttt{phase_match}, \texttt{structure_ratio},
+  \item \texttt{carrier_strength}, \texttt{multi_scale_consistency}.
+\end{enumerate}
+
+\subsection{Robust SynthID Extractor: \fpath{backend/src/synthid/robust_extractor.py}}
+This module is intentionally advanced and multi-stage.
+
+Main components:
+\begin{enumerate}
+  \item multi-scale analysis (256, 512, 1024),
+  \item multi-denoiser fusion (wavelet families, bilateral, non-local means, Wiener),
+  \item carrier peak detection with scale voting,
+  \item ICA/PCA watermark component separation,
+  \item adaptive thresholding using learned codebook statistics.
+\end{enumerate}
+
+Core decision checks in \texttt{detect_array()}:
+\begin{enumerate}
+  \item correlation exceeds codebook threshold,
+  \item average phase match exceeds 0.45,
+  \item structure ratio remains in expected range (0.7 to 2.0).
+\end{enumerate}
+
+Confidence combines four normalized terms:
+\[
+\text{confidence} = 0.35\cdot s_{corr} + 0.35\cdot s_{phase} + 0.15\cdot s_{structure} + 0.15\cdot s_{consistency}
+\]
+
+\subsection{Image Ensemble Predictor: \fpath{backend/combine_model.py}}
+\subsubsection{Loaded Components}
+\begin{enumerate}
+  \item ResNet50 binary head (required),
+  \item ViT classifier from \texttt{dima806/ai_vs_real_image_detection} (optional fallback-safe),
+  \item meta-learner + polynomial transformer (optional),
+  \item custom forensic calibration module.
+\end{enumerate}
+
+\subsubsection{Score Fusion Logic}
+If ViT exists:
+\begin{enumerate}
+  \item compute ResNet and ViT AI probabilities,
+  \item produce base average,
+  \item if meta-learner is available, use meta score with drift-aware stabilization,
+  \item then calibrate with forensic output.
+\end{enumerate}
+
+If ViT is unavailable:
+\begin{enumerate}
+  \item system remains operational using ResNet plus forensic calibration.
+\end{enumerate}
+
+\subsubsection{Custom Forensic Weighted Score}
+\fpath{backend/custom_forensics.py} applies:
+\[
+S_{weighted}=0.50S_{resnet}+0.20S_{frequency}+0.20S_{anatomy}+0.10S_{entropy}
+\]
+
+Then it applies calibration rules based on:
+\begin{enumerate}
+  \item supporting forensic modules,
+  \item negative forensic modules,
+  \item forensics-only AI probability.
+\end{enumerate}
+
+\subsubsection{Dynamic AI Threshold Resolution}
+Threshold is not fixed.
+It increases strongly when forensic support is weak or negative.
+For example:
+\begin{enumerate}
+  \item with no forensic support and weak forensics-only score, threshold can rise to 0.88 or 0.90,
+  \item with strong multi-module forensic support, threshold can be as low as 0.55.
+\end{enumerate}
+
+\subsubsection{Decision Confidence Formula}
+Confidence is margin-based and clipped:
+\[
+C = 0.5 + 0.5\cdot\text{clip}(m,0,1)
+\]
+where margin $m$ is computed relative to threshold on the predicted side (AI or Real).
+
+\subsection{Custom Forensic Modules: \fpath{backend/custom_forensics.py}}
+Three forensic analyzers support model calibration.
+
+\subsubsection{Frequency Analyzer}
+Performs FFT power-spectrum checks for checkerboard-like upsampling traces.
+Uses mirrored peak pairs, grid energy ratio, and peak prominence.
+
+\subsubsection{Anatomy Analyzer}
+Uses MediaPipe landmarks for body/hands.
+Scores asymmetry, implausible angles, landmark geometry anomalies, and out-of-frame landmark behavior.
+Supports classic and Tasks API modes depending on environment.
+
+\subsubsection{Entropy Analyzer}
+Computes local entropy over patch grids.
+Looks for suspicious center-edge detail gaps and patch spread abnormalities while avoiding false alarms on naturally low-detail scenes.
+
+\subsection{Forensic Summary Generator: \fpath{backend/forensic.py}}
+This module translates raw layer outputs into presentation-friendly statements.
+
+Key behaviors:
+\begin{enumerate}
+  \item determines method source (C2PA policy, SynthID, or model),
+  \item produces short ``points'' list for UI,
+  \item includes conclusion wording that matches final verdict,
+  \item provides separate summary logic for image and video results.
+\end{enumerate}
+
+\section{Video Pipeline: Behind-the-Scenes Full Flow}
+\subsection{Request Entry}
+Endpoint: \fpath{/api/analyze_video} (POST).
+
+Validation checks:
+\begin{enumerate}
+  \item file exists in request,
+  \item filename is present,
+  \item extension is in mp4/avi/mov.
+\end{enumerate}
+
+File is saved to temporary UUID path and removed after analysis.
+
+\subsection{Primary Path: Dedicated Video Checkpoints}
+In \fpath{backend/video_detect_standalone.py}, function \texttt{deepfakes_video_predict()} first tries \texttt{_predict_with_checkpoint_model()}.
+
+Requirements:
+\begin{enumerate}
+  \item \fpath{backend/checkpoints/efficientnet.onnx},
+  \item \fpath{backend/checkpoints/model.pth},
+  \item optional dependencies \texttt{onnx} and \texttt{onnx2pytorch}.
+\end{enumerate}
+
+Method:
+\begin{enumerate}
+  \item sample 3 frames,
+  \item preprocess each frame to 256x256,
+  \item run converted checkpoint model,
+  \item average fake probability,
+  \item classify FAKE when probability \(\ge 0.60\).
+\end{enumerate}
+
+\subsection{Fallback Path: Frame-Based Estimation}
+If dedicated path fails, system automatically uses \texttt{_predict_with_frame_fallback()}.
+
+Method:
+\begin{enumerate}
+  \item sample up to 6 frames across full clip,
+  \item run image predictor probability for each frame,
+  \item count flagged frames using frame threshold 0.68,
+  \item combine mean and peak into final score:
+\end{enumerate}
+
+\[
+P_{video} = 0.7\cdot P_{mean} + 0.3\cdot P_{peak}
+\]
+
+Video verdict threshold in fallback mode is 0.65.
+
+\subsection{Video Explainability Output}
+Result includes:
+\begin{enumerate}
+  \item frames analyzed,
+  \item average AI probability,
+  \item peak AI probability,
+  \item flagged frame count,
+  \item per-frame timestamps/probabilities (fallback path),
+  \item forensic summary text from \fpath{backend/forensic.py}.
+\end{enumerate}
+
+\section{Frontend Runtime Flow (Template and React)}
+\subsection{Template UI Flow}
+Template pages are served directly by Flask routes in \fpath{backend/app.py}.
+
+Image template flow:
+\begin{enumerate}
+  \item \fpath{backend/templates/index.html} -> user selects image flow,
+  \item \fpath{backend/templates/dashboard.html} + \fpath{backend/static/scripts.js} handles upload and logs,
+  \item POST to \fpath{/api/analyze},
+  \item save result in \texttt{sessionStorage.analysisResult},
+  \item redirect to \fpath{/report} rendered by \fpath{backend/templates/report.html}.
+\end{enumerate}
+
+Video template flow:
+\begin{enumerate}
+  \item \fpath{backend/templates/video_dashboard.html} handles upload,
+  \item POST to \fpath{/api/analyze_video},
+  \item save result in \texttt{sessionStorage.videoAnalysisResult},
+  \item redirect to \fpath{/video_report} rendered by \fpath{backend/templates/video_report.html}.
+\end{enumerate}
+
+\subsection{React UI Flow}
+\fpath{frontend/src/App.jsx} defines routes:
+\begin{enumerate}
+  \item /,
+  \item /dashboard,
+  \item /report,
+  \item /video-dashboard,
+  \item /video-report.
+\end{enumerate}
+
+Important page responsibilities:
+\begin{enumerate}
+  \item \fpath{frontend/src/pages/Dashboard.jsx}: image upload, step states, logs, API call to \fpath{/api/analyze}, session storage write.
+  \item \fpath{frontend/src/pages/Report.jsx}: reads image result, renders layer badges, optional call to \fpath{/api/forensic-report}.
+  \item \fpath{frontend/src/pages/VideoDashboard.jsx}: video upload, step states, API call to \fpath{/api/analyze_video}.
+  \item \fpath{frontend/src/pages/VideoReport.jsx}: parses label/confidence, renders metrics and forensic points.
+\end{enumerate}
+
+\subsection{Frontend-Backend Connection}
+\fpath{frontend/vite.config.js} proxies \fpath{/api} to \texttt{http://localhost:7860} during development.
+This is required so frontend uses same API path structure without CORS complexity in local mode.
+
+\subsection{Styling Layers}
+There are two styling systems:
+\begin{enumerate}
+  \item template UI uses \fpath{backend/static/style.css},
+  \item React UI uses Tailwind + \fpath{frontend/src/index.css} utility/component classes.
+\end{enumerate}
+
+Both maintain the same visual language (dark gradient, neon accents, glass cards, score circle).
+
+\section{API Contracts and Field-Level Notes}
+\subsection{GET /api/health}
+Primary fields:
+\begin{enumerate}
+  \item \texttt{success}, \texttt{status},
+  \item \texttt{python_executable}, \texttt{python_version},
+  \item \texttt{models.ai_predictor_loaded}, \texttt{models.synthid_loaded},
+  \item \texttt{c2pa.available}, \texttt{c2pa.import_error}, \texttt{c2pa.has_reader}.
+\end{enumerate}
+
+\subsection{POST /api/analyze}
+Request: multipart form with \texttt{file}.
+
+Response includes:
+\begin{enumerate}
+  \item top-level verdict fields,
+  \item \texttt{layers.c2pa}, \texttt{layers.synthid}, \texttt{layers.ai_model},
+  \item optional \texttt{explainability.artifacts},
+  \item \texttt{forensic_summary} with points and conclusion.
+\end{enumerate}
+
+\subsection{POST /api/analyze_video}
+Request: multipart form with \texttt{file}.
+
+Response includes:
+\begin{enumerate}
+  \item \texttt{label} (REAL/FAKE),
+  \item \texttt{confidence},
+  \item \texttt{ai_probability},
+  \item \texttt{explainability.metrics},
+  \item optional frame-level list in fallback mode,
+  \item \texttt{forensic_summary}.
+\end{enumerate}
+
+\subsection{POST /api/forensic-report}
+Request body: complete analysis result JSON.
+
+Response includes:
+\begin{enumerate}
+  \item \texttt{enhanced_report} markdown-style text,
+  \item \texttt{summary},
+  \item \texttt{forensic_summary}.
+\end{enumerate}
+
+\section{Operations, Scripts, and Environment Controls}
+\subsection{Windows Script Responsibilities}
+\begin{longtable}{p{0.42\textwidth} p{0.52\textwidth}}
+\toprule
+\textbf{Script} & \textbf{Behavior} \\
+\midrule
+\endhead
+\fpath{scripts/windows/start-backend-dev.ps1} & Uses \fpath{.venv/Scripts/python.exe}, sets port env var, runs \fpath{backend/app.py}. \\
+\fpath{scripts/windows/start-backend-prod.ps1} & Uses same virtual env Python, sets port and Waitress threads, runs \fpath{backend/serve.py}. \\
+\fpath{scripts/windows/start-frontend-dev.ps1} & Enters \fpath{frontend} and executes \texttt{npm run dev}. \\
+\fpath{scripts/windows/health-check.ps1} & Calls \fpath{/api/health} and prints JSON with depth. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Important Environment Variables}
+Backend supports:
+\begin{enumerate}
+  \item \texttt{PORT} (default 7860),
+  \item \texttt{HOST} (default 0.0.0.0),
+  \item \texttt{WAITRESS_THREADS} (default 8 in serve.py),
+  \item \texttt{ENABLE_TTA} for image predictor test-time augmentation,
+  \item \texttt{RESNET_AI_INDEX}, \texttt{VIT_AI_INDEX} for class index control,
+  \item MediaPipe task model paths when needed.
+\end{enumerate}
+
+\subsection{Requirements Snapshot}
+\fpath{requirements.txt} includes web, ML, video, and provenance packages such as:
+\begin{enumerate}
+  \item Flask and Waitress,
+  \item torch, torchvision, transformers,
+  \item mediapipe, scikit-image, scikit-learn,
+  \item opencv-python,
+  \item c2pa-python.
+\end{enumerate}
+
+\section{Deployment and Reliability Notes}
+From \fpath{deployment_document.md}:
+\begin{enumerate}
+  \item free plans usually sleep when idle,
+  \item first request can be slower due to cold start,
+  \item model files must exist in runtime environment,
+  \item \fpath{/api/health} should always be first deployment validation check.
+\end{enumerate}
+
+\subsection{Critical Repository Caveat}
+\fpath{.gitignore} excludes many large model/checkpoint patterns (including \texttt{*.pth}, \texttt{*.joblib}, \texttt{*.pkl}, and \fpath{model_output/}).
+
+Operational impact:
+\begin{enumerate}
+  \item if deployment environment does not independently receive these files, inference can fail or degrade,
+  \item this must be handled through artifact provisioning strategy.
+\end{enumerate}
+
+\section{Validation Checklist and What Was Confirmed}
+Recommended post-change checks:
+\begin{enumerate}
+  \item call \fpath{/api/health} and confirm model + C2PA flags,
+  \item run one image through \fpath{/api/analyze},
+  \item run one video through \fpath{/api/analyze_video},
+  \item verify \fpath{/api/forensic-report} text generation,
+  \item verify React routes and template pages both render expected outcomes.
+\end{enumerate}
+
+Observed final state after implemented work:
+\begin{enumerate}
+  \item image and video detections are operational,
+  \item C2PA policy is consistent across backend and UI,
+  \item React video flow is enabled,
+  \item health diagnostics expose runtime mismatch quickly.
+\end{enumerate}
+
+\section{Common Questions with Ready Answers}
+\subsection{Architecture Questions}
+\textbf{Q1: Why use multi-layer detection instead of one model?}\\
+Because provenance metadata and watermark evidence are often higher-confidence signals than pixel-model inference alone.
+
+\textbf{Q2: Why is C2PA first?}\\
+Because signed provenance can be decisive and avoids unnecessary lower-layer inference.
+
+\textbf{Q3: Why can C2PA metadata presence alone return AI-generated?}\\
+This is an explicit project policy change to make signed metadata decisive even without explicit AI action declaration.
+
+\textbf{Q4: What prevents contradictory layer outputs?}\\
+Short-circuit design in \fpath{backend/app.py}. When upper layers are decisive, lower layers are marked skipped.
+
+\subsection{Model and Forensic Questions}
+\textbf{Q5: How are false positives reduced?}\\
+Conservative thresholding plus low-confidence override when SynthID is negative and forensic support is weak.
+
+\textbf{Q6: Is ViT mandatory?}\\
+No. If ViT fails to load, system still runs with ResNet and forensic calibration.
+
+\textbf{Q7: What if meta-learner files are missing?}\\
+System continues with base blend and forensic calibration; meta fusion is optional.
+
+\textbf{Q8: What forensic checks are implemented?}\\
+Frequency checkerboard artifacts, anatomical landmark plausibility, and entropy distribution consistency.
+
+\subsection{Video Questions}
+\textbf{Q9: How does video detection work when checkpoints are missing?}\\
+It automatically falls back to frame sampling and image-model probability aggregation.
+
+\textbf{Q10: How is final fallback video score computed?}\\
+\(0.7 \times\) mean frame score plus \(0.3 \times\) peak frame score.
+
+\textbf{Q11: Why return frame-level explainability?}\\
+To avoid black-box output and show how clip-level verdict emerged from sampled frames.
+
+\subsection{Operations Questions}
+\textbf{Q12: Why add /api/health?}\\
+To quickly inspect interpreter path, model load status, and C2PA availability during runtime troubleshooting.
+
+\textbf{Q13: Why use Waitress for production mode?}\\
+Flask dev server is not intended for production robustness.
+
+\textbf{Q14: Why can cloud behavior differ from local?}\\
+Free hosting cold starts, package/platform differences, and missing model artifacts can change runtime behavior.
+
+\textbf{Q15: Why is virtual environment path emphasized?}\\
+Starting backend with wrong interpreter is a common source of ``package installed but unavailable at runtime'' issues.
 
 \section{Known Limits and Honest Expectations}
 \begin{enumerate}
-  \item Free deployment plans may sleep when idle.
-  \item Cold starts can slow the first request.
-  \item Large model artifacts must be present in runtime environment.
-  \item C2PA support can vary by cloud runtime packaging details.
+  \item free hosting cold starts cannot be fully eliminated,
+  \item model and artifact availability must be guaranteed per environment,
+  \item C2PA package support can vary by host runtime and platform,
+  \item all detectors can still have edge cases; forensic calibration reduces but cannot mathematically eliminate risk.
 \end{enumerate}
 
-\section{Final Outcome}
-The final system now has:
+\section{Final Outcome and Project Status}
+After all implemented instructions and fixes, the project is in a coherent and explainable state:
 \begin{enumerate}
-  \item consistent decision logic across backend, forensic summaries, and UI,
-  \item reliable runtime diagnostics,
-  \item functional image and video flows in both backend templates and React,
-  \item safer and clearer Windows-first operational documentation,
-  \item organized helper scripts for daily use.
+  \item layered decisions are internally consistent,
+  \item policy wording and UI wording are synchronized,
+  \item image and video paths both operate in backend and React,
+  \item diagnostics and scripts support reliable day-to-day operations,
+  \item documentation now captures both architecture and practical runbook details.
 \end{enumerate}
 
-In short, the project moved from partially conflicting behavior to a coherent, traceable, and deployment-ready state while keeping core functionality intact.
+This document is intentionally presentation-ready and maintenance-ready so future team members can explain both ``what it does'' and ``how it does it'' without reverse-engineering the code from scratch.
 
 \end{document}
