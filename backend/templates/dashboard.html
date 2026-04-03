@@ -16,7 +16,10 @@
             <p style="color: var(--text-muted); font-size: 0.8rem;" id="file-info">(PNG, JPG, JPEG, WebP)</p>
             <input type="file" id="fileElem" style="display:none" accept=".png,.jpg,.jpeg,.webp">
         </div>
-        <button class="btn-glow scan-btn" id="scan-btn" disabled>Start Scan</button>
+        <div style="display:flex; gap:1rem; justify-content:center; flex-wrap:wrap;">
+            <button class="btn-glow scan-btn" id="scan-btn" disabled>Start Scan</button>
+            <button class="btn-glow scan-btn" type="button" onclick="location.href='/'">Back to Main Page</button>
+        </div>
 
         <div style="margin-top: 2rem;">
             <h3 style="margin-bottom: 1rem;">Analysis Steps</h3>

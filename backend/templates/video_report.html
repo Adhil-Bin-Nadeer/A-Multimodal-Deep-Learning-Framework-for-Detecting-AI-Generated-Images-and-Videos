@@ -27,7 +27,10 @@
             </div>
         </div>
         <br>
-        <button class="btn-glow" onclick="location.href='/'">Scan Another File</button>
+        <div style="display:flex; gap:1rem; justify-content:center; flex-wrap:wrap;">
+            <button class="btn-glow" onclick="location.href='/video_dashboard'">Scan Another Video</button>
+            <button class="btn-glow" onclick="location.href='/'">Back to Main Page</button>
+        </div>
     </div>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
@@ -43,17 +46,17 @@
         const verdictTitle = document.getElementById('verdict-title');
         const verdictReason = document.getElementById('verdict-reason');
         let isAI = false;
-        let confidence = 0;
-        let label = '';
+        let confidence = typeof result.confidence === 'number' ? result.confidence : 0;
+        let label = result.label ? String(result.label).toUpperCase() : '';
         // Parse result text (e.g., "The video is FAKE. Confidence score: 62.3%")
-        if (result.result) {
+        if ((!label || !confidence) && result.result) {
             const match = result.result.match(/(REAL|FAKE).*?([\d.]+)%/i);
             if (match) {
                 label = match[1].toUpperCase();
                 confidence = parseFloat(match[2]);
-                isAI = (label === 'FAKE');
             }
         }
+        isAI = (label === 'FAKE');
         if (isAI) {
             verdictTitle.textContent = 'VERDICT: AI-GENERATED';
             verdictBanner.style.borderColor = 'var(--neon-red)';
@@ -64,7 +67,7 @@
             verdictBanner.style.background = 'rgba(0, 255, 136, 0.1)';
             verdictTitle.style.color = 'var(--neon-green)';
         }
-        verdictReason.textContent = 'Source: AI video detection model analysis';
+        verdictReason.textContent = 'Video AI analysis completed';
         // Confidence score
         const scoreValue = document.getElementById('score-value');
         scoreValue.textContent = confidence.toFixed(1) + '%';
@@ -80,9 +83,22 @@
         else if (confidence > 40) probText = 'Medium';
         probLabel.textContent = `Probability: ${probText}`;
         probLabel.style.color = isAI ? 'var(--neon-red)' : 'var(--neon-green)';
-        // Log
+        // Forensic Summary
         const log = document.getElementById('detailed-log');
-        log.innerHTML = `[LOG] Video analysis completed.<br>[RESULT] ${result.result}`;
+        let logHtml = '[FORENSIC SUMMARY]<br>';
+        const forensicSummary = result.forensic_summary;
+        if (forensicSummary?.points && Array.isArray(forensicSummary.points) && forensicSummary.points.length > 0) {
+            forensicSummary.points.forEach(item => {
+                logHtml += `- ${item}<br>`;
+            });
+            if (forensicSummary.conclusion) {
+                logHtml += `<br>[CONCLUSION] ${forensicSummary.conclusion}`;
+            }
+        } else {
+            logHtml += `- Result: ${isAI ? 'AI-Generated Video' : 'Authentic Video'}<br>`;
+            logHtml += `- Method: ${result.source || 'Video AI Detector'}`;
+        }
+        log.innerHTML = logHtml;
         sessionStorage.removeItem('videoAnalysisResult');
     });
     </script>

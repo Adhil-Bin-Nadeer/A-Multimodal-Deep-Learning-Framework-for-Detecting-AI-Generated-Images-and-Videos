@@ -89,6 +89,7 @@ export default function Report() {
   const c2pa    = layers?.c2pa
   const synthid = layers?.synthid
   const aiModel = layers?.ai_model
+  const forensicSummary = result.forensic_summary
 
   // ── Layer 1 badge ──────────────────────────────────────────────────────────
   let l1Value = 'Not Found', l1Color = 'gray'
@@ -99,7 +100,18 @@ export default function Report() {
 
   // ── Layer 2 badge ──────────────────────────────────────────────────────────
   let l2Value = 'N/A', l2Color = 'gray'
-  if (synthid?.status === 'skipped') { l2Value = 'Skipped'; l2Color = 'gray' }
+  if (synthid?.status === 'complete') {
+    l2Value = synthid.is_watermarked
+      ? `Detected (${synthid.confidence.toFixed(1)}% detector confidence)`
+      : `Not Detected (${synthid.confidence.toFixed(1)}% detector confidence)`
+    l2Color = synthid.is_watermarked ? 'red' : 'green'
+  } else if (synthid?.status === 'skipped') {
+    l2Value = 'Skipped'; l2Color = 'gray'
+  } else if (synthid?.status === 'unavailable') {
+    l2Value = 'Unavailable'; l2Color = 'gray'
+  } else if (synthid?.status === 'error') {
+    l2Value = 'Error'; l2Color = 'red'
+  }
 
   // ── Layer 3 badge ──────────────────────────────────────────────────────────
   let l3Value = 'Error', l3Color = 'gray'
@@ -111,31 +123,30 @@ export default function Report() {
   }
 
   // ── Build log ──────────────────────────────────────────────────────────────
-  let logLines = [`[LOG] Analysis completed at ${new Date().toLocaleTimeString()}.`]
-  if (c2pa) {
-    if (c2pa.c2pa_present) {
-      logLines.push(`[LAYER 1] C2PA metadata FOUND. Issuer: ${c2pa.issuer || 'Unknown'}. Valid: ${c2pa.valid ? 'YES' : 'NO'}.`)
-      logLines.push(`[LAYER 1] AI Generated flag in manifest: ${c2pa.ai_generated ? 'YES' : 'NO'}.`)
-    } else {
-      logLines.push('[LAYER 1] C2PA check complete. No cryptographic signature found.')
+  let logLines = ['[FORENSIC SUMMARY]']
+  if (forensicSummary?.points?.length) {
+    forensicSummary.points.forEach(item => {
+      logLines.push(`- ${item}`)
+    })
+    if (forensicSummary.conclusion) {
+      logLines.push(`[CONCLUSION] ${forensicSummary.conclusion}`)
     }
+  } else {
+    logLines.push(`[CONCLUSION] Final verdict: ${final_verdict} with ${confidence.toFixed(1)}% confidence.`)
   }
-  if (synthid) logLines.push(`[LAYER 2] SynthID: ${synthid.reason || synthid.status}.`)
-  if (aiModel?.status === 'complete') {
-    logLines.push(`[LAYER 3] AI Model inference complete. Label: ${aiModel.label}. Confidence: ${aiModel.confidence.toFixed(2)}%.`)
-  } else if (aiModel?.status === 'skipped') {
-    logLines.push(`[LAYER 3] AI Model skipped: ${aiModel.reason}.`)
-  }
-  logLines.push(`[CONCLUSION] Final verdict: ${final_verdict} with ${confidence.toFixed(1)}% confidence.`)
 
   // ── Verdict banner colours ─────────────────────────────────────────────────
   const verdictBorder = isAI ? 'border-neon-red'   : 'border-neon-green'
   const verdictBg     = isAI ? 'bg-neon-red/10'    : 'bg-neon-green/10'
   const verdictText   = isAI ? 'text-neon-red'      : 'text-neon-green'
   const verdictTitle  = isAI ? 'VERDICT: AI-GENERATED' : 'VERDICT: AUTHENTIC'
-  const verdictReason = c2pa?.c2pa_present
-    ? 'Source: C2PA cryptographic verification (100% confidence)'
-    : 'Source: AI detection model ensemble analysis'
+  const verdictReason = c2pa?.c2pa_present && c2pa?.ai_generated
+    ? 'Source: C2PA signed manifest declaration of AI generation'
+    : synthid?.status === 'complete' && synthid?.is_watermarked
+      ? 'Source: SynthID watermark detection'
+    : c2pa?.c2pa_present
+      ? 'Source: C2PA provenance metadata + AI detection model analysis'
+      : 'Source: AI detection model ensemble analysis'
 
   // ── Generate forensic report ───────────────────────────────────────────────
   async function generateReport() {

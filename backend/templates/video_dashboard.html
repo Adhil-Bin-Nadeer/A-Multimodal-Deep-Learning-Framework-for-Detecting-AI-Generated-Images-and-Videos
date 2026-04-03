@@ -10,18 +10,25 @@
     <div class="container">
         <h1>Video Scanner Dashboard</h1>
         <p class="subtitle" style="margin-bottom: 1.5rem;">Upload a video for deepfake detection</p>
+
         <div class="glass-card upload-zone" id="video-drop-area">
-            <div class="icon" style="font-size: 2.5rem; margin-bottom: 0.5rem;">⬆️</div>
+            <div class="icon" style="font-size: 2.5rem; margin-bottom: 0.5rem;">&#8679;</div>
             <h3 id="video-upload-text">Drag & Drop Video Here</h3>
             <p style="color: var(--text-muted); font-size: 0.8rem;" id="video-file-info">(MP4, AVI, MOV)</p>
             <input type="file" id="videoFileElem" style="display:none" accept=".mp4,.avi,.mov">
         </div>
-        <button class="btn-glow scan-btn" id="video-scan-btn" disabled>Start Scan</button>
+
+        <div style="display:flex; gap:1rem; justify-content:center; flex-wrap:wrap;">
+            <button class="btn-glow scan-btn" id="video-scan-btn" disabled>Start Scan</button>
+            <button class="btn-glow scan-btn" type="button" onclick="location.href='/'">Back to Main Page</button>
+        </div>
+
         <div class="console-log" id="video-console">
             > System ready.<br>
             > Awaiting video input...
         </div>
     </div>
+
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         const dropArea = document.getElementById('video-drop-area');
@@ -30,30 +37,50 @@
         const scanBtn = document.getElementById('video-scan-btn');
         const uploadText = document.getElementById('video-upload-text');
         const fileInfo = document.getElementById('video-file-info');
+
         if (!dropArea) return;
+
         let selectedFile = null;
+
         dropArea.addEventListener('click', () => fileInput.click());
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             dropArea.addEventListener(eventName, preventDefaults, false);
         });
-        function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
+
+        function preventDefaults(event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+
         ['dragenter', 'dragover'].forEach(eventName => {
-            dropArea.addEventListener(eventName, () => { dropArea.classList.add('dragover'); });
+            dropArea.addEventListener(eventName, () => {
+                dropArea.classList.add('dragover');
+            });
         });
+
         ['dragleave', 'drop'].forEach(eventName => {
-            dropArea.addEventListener(eventName, () => { dropArea.classList.remove('dragover'); });
+            dropArea.addEventListener(eventName, () => {
+                dropArea.classList.remove('dragover');
+            });
         });
+
         dropArea.addEventListener('drop', handleDrop);
         fileInput.addEventListener('change', handleFileSelect);
         scanBtn.addEventListener('click', startScan);
-        function handleDrop(e) {
-            const dt = e.dataTransfer;
-            const files = dt.files;
-            if (files.length > 0) { selectFile(files[0]); }
+
+        function handleDrop(event) {
+            const files = event.dataTransfer.files;
+            if (files.length > 0) {
+                selectFile(files[0]);
+            }
         }
-        function handleFileSelect(e) {
-            if (e.target.files.length > 0) { selectFile(e.target.files[0]); }
+
+        function handleFileSelect(event) {
+            if (event.target.files.length > 0) {
+                selectFile(event.target.files[0]);
+            }
         }
+
         function selectFile(file) {
             selectedFile = file;
             uploadText.textContent = file.name;
@@ -61,49 +88,65 @@
             scanBtn.disabled = false;
             log(`Video selected: ${file.name}`);
         }
+
         function startScan() {
             if (!selectedFile) return;
+
             scanBtn.disabled = true;
             scanBtn.textContent = 'Scanning...';
             processFile(selectedFile);
         }
+
         function log(message) {
             if (!consoleLog) return;
+
             const line = document.createElement('div');
-            line.innerHTML = `> ${message}`;
+            line.textContent = `> ${message}`;
             consoleLog.appendChild(line);
             consoleLog.scrollTop = consoleLog.scrollHeight;
         }
+
         async function processFile(file) {
             uploadText.textContent = `Analyzing: ${file.name}...`;
             fileInfo.textContent = 'Processing...';
             log(`Video received: ${file.name}`);
             log(`File type: ${file.type || 'Unknown'}`);
             log('Running deepfake detection...');
+
             const formData = new FormData();
             formData.append('file', file);
+
             try {
                 const response = await fetch('/api/analyze_video', {
                     method: 'POST',
                     body: formData
                 });
+
                 const result = await response.json();
                 if (!result.success) {
-                    log(`❌ Error: ${result.error}`);
-                    scanBtn.textContent = 'Error';
+                    log(`ERROR: ${result.error}`);
+                    scanBtn.textContent = 'Start Scan';
+                    scanBtn.disabled = false;
+                    fileInfo.textContent = 'Fix the issue and try again.';
                     return;
                 }
-                // Store result for report page
+
                 sessionStorage.setItem('videoAnalysisResult', JSON.stringify({
                     filename: selectedFile.name,
-                    result: result.result
+                    result: result.result,
+                    label: result.label,
+                    confidence: result.confidence,
+                    source: result.source,
+                    explainability: result.explainability || null,
+                    forensic_summary: result.forensic_summary || null
                 }));
-                // Redirect to video report page
+
                 window.location.href = '/video_report';
-                scanBtn.textContent = 'Done';
             } catch (error) {
-                log(`❌ Network error: ${error.message}`);
-                scanBtn.textContent = 'Error';
+                log(`NETWORK ERROR: ${error.message}`);
+                scanBtn.textContent = 'Start Scan';
+                scanBtn.disabled = false;
+                fileInfo.textContent = 'Connection problem. Please try again.';
             }
         }
     });

@@ -21,7 +21,7 @@ def check_c2pa(file_path):
         manifest_store_json = reader.json()
 
         if not manifest_store_json:
-            return {"c2pa_present": False, "message": "No C2PA manifest found"}
+            return {"c2pa_present": False, "available": True, "message": "No C2PA manifest found"}
 
         # Parse the JSON string returned by the library
         manifest_data = json.loads(manifest_store_json)
@@ -29,7 +29,7 @@ def check_c2pa(file_path):
         # Get the active manifest
         active_manifest_label = manifest_data.get("active_manifest")
         if not active_manifest_label:
-            return {"c2pa_present": False, "message": "Manifest store exists but no active manifest."}
+            return {"c2pa_present": False, "available": True, "message": "Manifest store exists but no active manifest."}
 
         manifests = manifest_data.get("manifests", {})
         active_manifest = manifests.get(active_manifest_label, {})
@@ -55,6 +55,7 @@ def check_c2pa(file_path):
 
         return {
             "c2pa_present": True,
+            "available": True,
             "valid": is_valid,
             "issuer": issuer,
             "ai_generated": is_ai,
@@ -62,6 +63,6 @@ def check_c2pa(file_path):
         }
     except c2pa.C2paError as e:
         # No manifest found or other C2PA-specific error
-        return {"c2pa_present": False, "error": str(e)}
+        return {"c2pa_present": False, "available": True, "error": str(e)}
     except Exception as e:
-        return {"c2pa_present": False, "error": str(e)}
+        return {"c2pa_present": False, "available": True, "error": str(e)}

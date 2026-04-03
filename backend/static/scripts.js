@@ -153,29 +153,49 @@ document.addEventListener('DOMContentLoaded', function() {
                 log('[LAYER 1] No C2PA signature found. Proceeding to next layer...');
             }
 
-            // Step 2: SynthID (skipped for now)
+            // Step 2: SynthID
             updateStep('step2', 'processing');
             log('[LAYER 2] SynthID check...');
             await delay(500);
             const synthid = result.layers.synthid;
-            if (synthid && synthid.status === 'skipped') {
+            if (synthid?.status === 'complete') {
+                if (synthid.is_watermarked) {
+                    updateStep('step2', 'flagged');
+                    log(`[LAYER 2] Watermark detected (${synthid.confidence.toFixed(1)}% confidence)`);
+                } else {
+                    updateStep('step2', 'complete');
+                    log(`[LAYER 2] No watermark detected (${synthid.confidence.toFixed(1)}% confidence)`);
+                }
+            } else if (synthid?.status === 'skipped') {
+                updateStep('step2', 'complete');
                 log(`[LAYER 2] ${synthid.reason}`);
+            } else if (synthid?.status === 'unavailable') {
+                updateStep('step2', 'complete');
+                log(`[LAYER 2] Unavailable - ${synthid.error || synthid.message || 'Detector unavailable'}`);
+            } else if (synthid?.status === 'error') {
+                updateStep('step2', 'complete');
+                log(`[LAYER 2] Error - ${synthid.error || 'Detection failed'}`);
+            } else {
+                updateStep('step2', 'complete');
+                log('[LAYER 2] No SynthID result returned.');
             }
-            updateStep('step2', 'complete');
 
             // Step 3: AI Model
-            updateStep('step3', 'processing');
-            log('[LAYER 3] Running AI detection model...');
-            await delay(500);
             const aiModel = result.layers.ai_model;
-            if (aiModel && aiModel.status === 'complete') {
-                updateStep('step3', 'complete');
-                log(`[LAYER 3] Result: ${aiModel.label} (${aiModel.confidence.toFixed(1)}% confidence)`);
-            } else if (aiModel && aiModel.status === 'skipped') {
+            if (aiModel && aiModel.status === 'skipped') {
                 updateStep('step3', 'complete');
                 log(`[LAYER 3] Skipped - ${aiModel.reason}`);
             } else {
-                log(`[LAYER 3] ${aiModel?.error || 'Model unavailable'}`);
+                updateStep('step3', 'processing');
+                log('[LAYER 3] Running AI detection model...');
+                await delay(500);
+
+                if (aiModel && aiModel.status === 'complete') {
+                    updateStep('step3', 'complete');
+                    log(`[LAYER 3] Result: ${aiModel.label} (${aiModel.confidence.toFixed(1)}% confidence)`);
+                } else {
+                    log(`[LAYER 3] ${aiModel?.error || 'Model unavailable'}`);
+                }
             }
 
             // Final verdict

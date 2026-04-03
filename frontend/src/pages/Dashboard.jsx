@@ -118,22 +118,44 @@ export default function Dashboard() {
       appendLog('[LAYER 2] SynthID check...')
       await delay(500)
       const synthid = result.layers.synthid
-      if (synthid?.status === 'skipped') appendLog(`[LAYER 2] ${synthid.reason}`)
-      setStep('step2', 'complete')
+      if (synthid?.status === 'complete') {
+        if (synthid.is_watermarked) {
+          appendLog(`[LAYER 2] Watermark detected (${synthid.confidence.toFixed(1)}% confidence)`)
+          setStep('step2', 'flagged')
+        } else {
+          appendLog(`[LAYER 2] No watermark detected (${synthid.confidence.toFixed(1)}% confidence)`)
+          setStep('step2', 'complete')
+        }
+      } else if (synthid?.status === 'skipped') {
+        appendLog(`[LAYER 2] ${synthid.reason}`)
+        setStep('step2', 'complete')
+      } else if (synthid?.status === 'unavailable') {
+        appendLog(`[LAYER 2] Unavailable - ${synthid.error || synthid.message || 'Detector unavailable'}`)
+        setStep('step2', 'complete')
+      } else if (synthid?.status === 'error') {
+        appendLog(`[LAYER 2] Error - ${synthid.error || 'Detection failed'}`)
+        setStep('step2', 'complete')
+      } else {
+        appendLog('[LAYER 2] No SynthID result returned.')
+        setStep('step2', 'complete')
+      }
 
       // Layer 3 – AI Model
-      setStep('step3', 'processing')
-      appendLog('[LAYER 3] Running AI detection model...')
-      await delay(500)
       const aiModel = result.layers.ai_model
-      if (aiModel?.status === 'complete') {
-        setStep('step3', 'complete')
-        appendLog(`[LAYER 3] Result: ${aiModel.label} (${aiModel.confidence.toFixed(1)}% confidence)`)
-      } else if (aiModel?.status === 'skipped') {
+      if (aiModel?.status === 'skipped') {
         setStep('step3', 'complete')
         appendLog(`[LAYER 3] Skipped – ${aiModel.reason}`)
       } else {
-        appendLog(`[LAYER 3] ${aiModel?.error || 'Model unavailable'}`)
+        setStep('step3', 'processing')
+        appendLog('[LAYER 3] Running AI detection model...')
+        await delay(500)
+
+        if (aiModel?.status === 'complete') {
+          setStep('step3', 'complete')
+          appendLog(`[LAYER 3] Result: ${aiModel.label} (${aiModel.confidence.toFixed(1)}% confidence)`)
+        } else {
+          appendLog(`[LAYER 3] ${aiModel?.error || 'Model unavailable'}`)
+        }
       }
 
       appendLog('')

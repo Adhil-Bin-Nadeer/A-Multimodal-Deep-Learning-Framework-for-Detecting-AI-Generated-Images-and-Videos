@@ -27,7 +27,7 @@ DeepFake Defender is a comprehensive tool designed to detect AI-generated media 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/AI-media-detection-tool.git
+git clone https://github.com/christinawdc/AI-media-detection-tool.git
 cd AI-media-detection-tool
 ```
 
@@ -48,6 +48,10 @@ cd AI-media-detection-tool
    ```
    The backend will start on `http://127.0.0.1:5000`.
 
+4. Optional: enable video detection checkpoints:
+   - Place `efficientnet.onnx` and `model.pth` in `backend/checkpoints/`.
+   - Without these files, `/api/analyze_video` falls back to frame-based scoring with the existing image detector.
+
 ### 3. Frontend Setup
 
 1. Navigate to the frontend directory:
@@ -58,14 +62,16 @@ cd AI-media-detection-tool
    ```bash
    npm install
    ```
-3. Build for production (served by Flask):
+3. Build for production:
    ```bash
    npm run build
    ```
-   Alternatively, run in development mode:
+   Alternatively, run in development mode (proxies `/api` to `http://localhost:5000`):
    ```bash
    npm run dev
    ```
+
+Note: the Flask app currently serves the UI from `backend/templates` and `backend/static`.
 
 ## 📂 Project Structure
 

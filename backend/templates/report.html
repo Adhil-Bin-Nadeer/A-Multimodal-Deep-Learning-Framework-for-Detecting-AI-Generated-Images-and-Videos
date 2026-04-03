@@ -43,7 +43,10 @@
         </div>
 
         <br>
-        <button class="btn-glow" onclick="location.href='/'">Scan Another File</button>
+        <div style="display:flex; gap:1rem; justify-content:center; flex-wrap:wrap;">
+            <button class="btn-glow" onclick="location.href='/dashboard'">Scan Another File</button>
+            <button class="btn-glow" onclick="location.href='/'">Back to Main Page</button>
+        </div>
     </div>
 
     <script>
@@ -63,6 +66,7 @@
         const verdictReason = document.getElementById('verdict-reason');
         const finalVerdict = document.getElementById('final-verdict');
         const confidenceScore = document.getElementById('confidence-score');
+        const detectionMethod = document.getElementById('detection-method');
 
         const isAI = result.is_ai_generated;
         const confidence = result.confidence;
@@ -87,6 +91,16 @@
         confidenceScore.textContent = confidence.toFixed(1) + '%';
         confidenceScore.style.color = isAI ? 'var(--neon-red)' : 'var(--neon-green)';
 
+        if (result.layers?.c2pa?.c2pa_present && result.layers?.c2pa?.ai_generated) {
+            detectionMethod.textContent = 'C2PA';
+        } else if (result.layers?.synthid?.status === 'complete' && result.layers?.synthid?.is_watermarked) {
+            detectionMethod.textContent = 'SynthID';
+        } else if (result.layers?.ai_model?.status === 'complete') {
+            detectionMethod.textContent = 'AI Model';
+        } else {
+            detectionMethod.textContent = 'Multi-Layer';
+        }
+
         // Score Circle
         const scoreValue = document.getElementById('score-value');
         scoreValue.textContent = confidence.toFixed(1) + '%';
@@ -96,30 +110,29 @@
         scoreCircle.style.background = `conic-gradient(${isAI ? 'var(--neon-red)' : 'var(--neon-green)'} ${confidence}%, transparent 0)`;
         scoreCircle.style.boxShadow = isAI ? '0 0 20px rgba(255, 42, 42, 0.3)' : '0 0 20px rgba(0, 255, 136, 0.3)';
 
-        // Detailed Log
+        // Forensic Summary
         const detailedLog = document.getElementById('detailed-log');
-        let logHtml = '[LOG] Analysis started...<br>';
-        
-        if (result.layers) {
+        let logHtml = '[FORENSIC SUMMARY]<br>';
+        const forensicSummary = result.forensic_summary;
+        if (forensicSummary?.points && Array.isArray(forensicSummary.points) && forensicSummary.points.length > 0) {
+            forensicSummary.points.forEach(item => {
+                logHtml += `- ${item}<br>`;
+            });
+            if (forensicSummary.conclusion) {
+                logHtml += `<br>[CONCLUSION] ${forensicSummary.conclusion}`;
+            }
+        } else if (result.layers) {
             if (result.layers.c2pa) {
-                logHtml += `[LAYER 1] C2PA: ${result.layers.c2pa.status || 'checked'}<br>`;
+                logHtml += `[C2PA] ${result.layers.c2pa.status || 'Checked'}<br>`;
             }
             if (result.layers.synthid) {
-                logHtml += `[LAYER 2] SynthID: ${result.layers.synthid.status || 'skipped'}<br>`;
+                logHtml += `[SynthID] ${result.layers.synthid.status || 'Checked'}<br>`;
             }
             if (result.layers.ai_model) {
-                const aiStatus = result.layers.ai_model.status;
-                if (aiStatus === 'complete') {
-                    logHtml += `[LAYER 3] AI Model: ${result.layers.ai_model.label} (${result.layers.ai_model.confidence.toFixed(1)}%)<br>`;
-                } else if (aiStatus === 'error') {
-                    logHtml += `[LAYER 3] AI Model: ${result.layers.ai_model.error || 'Error'}<br>`;
-                } else {
-                    logHtml += `[LAYER 3] AI Model: ${aiStatus}<br>`;
-                }
+                logHtml += `[AI Model] ${result.layers.ai_model.status || 'Checked'}<br>`;
             }
+            logHtml += '<br>[CONCLUSION] Analysis completed.';
         }
-
-        logHtml += '<br>[RESULT] Analysis complete.';
         detailedLog.innerHTML = logHtml;
 
         sessionStorage.removeItem('analysisResult');

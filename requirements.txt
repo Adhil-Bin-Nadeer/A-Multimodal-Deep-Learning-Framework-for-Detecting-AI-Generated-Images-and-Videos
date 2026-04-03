@@ -10,7 +10,17 @@ torchvision
 transformers
 pillow
 numpy
+scipy
+PyWavelets
 joblib
+scikit-learn
+scikit-image
+mediapipe
+
+# Video detection
+opencv-python
+onnx
+onnx2pytorch
 
 # C2PA (optional - requires system libraries)
 # c2pa  # Uncomment if deploying with system support for libexiv2
