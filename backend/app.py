@@ -14,6 +14,7 @@ def download_models():
     try:
         from huggingface_hub import hf_hub_download
         repo = "Adhil786/deepfake-models"
+        token = os.environ.get("HF_TOKEN", None)
 
         files = [
             "model_output/synthid/robust_codebook.pkl",
@@ -30,6 +31,7 @@ def download_models():
                     repo_id=repo,
                     filename=filepath,
                     local_dir=".",
+                    token=token,
                 )
                 print(f"✅ Downloaded {filepath}")
             else:
