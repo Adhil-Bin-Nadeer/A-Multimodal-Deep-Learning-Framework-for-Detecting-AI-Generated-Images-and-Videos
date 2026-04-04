@@ -95,7 +95,19 @@ export default function Dashboard() {
 
     try {
       const response = await fetch('/api/analyze', { method: 'POST', body: formData })
-      const result   = await response.json()
+      const contentType = response.headers.get('content-type') || ''
+      let result
+
+      if (contentType.includes('application/json')) {
+        result = await response.json()
+      } else {
+        const raw = await response.text()
+        throw new Error(`HTTP ${response.status}: ${raw?.slice(0, 220) || 'Empty response body'}`)
+      }
+
+      if (!response.ok) {
+        throw new Error(result?.error || `HTTP ${response.status}`)
+      }
 
       if (!result.success) {
         appendLog(`❌ Error: ${result.error}`)

@@ -198,29 +198,19 @@ def _predict_with_checkpoint_model(input_video: str) -> Dict[str, object]:
     }
 
 
-def _get_frame_predictor(predictor=None, allow_autoload: bool = True):
+def _get_frame_predictor(predictor=None):
     if predictor is not None:
         return predictor
-
-    if not allow_autoload:
-        raise RuntimeError(
-            "AI image predictor is not initialized yet. "
-            "Retry after model warmup or provide dedicated video checkpoints."
-        )
 
     from combine_model import AIEnsemblePredictor
 
     return AIEnsemblePredictor()
 
 
-def _predict_with_frame_fallback(
-    input_video: str,
-    predictor=None,
-    allow_predictor_autoload: bool = True,
-) -> Dict[str, object]:
+def _predict_with_frame_fallback(input_video: str, predictor=None) -> Dict[str, object]:
     sampled = _sample_video_frames(input_video, n_frames=DEFAULT_SAMPLE_FRAMES)
     frames = sampled["frames"]
-    predictor = _get_frame_predictor(predictor, allow_autoload=allow_predictor_autoload)
+    predictor = _get_frame_predictor(predictor)
 
     frame_scores = []
     for frame_info in frames:
@@ -283,11 +273,7 @@ def _predict_with_frame_fallback(
     }
 
 
-def deepfakes_video_predict(
-    input_video: str,
-    predictor=None,
-    allow_predictor_autoload: bool = True,
-) -> Dict[str, object]:
+def deepfakes_video_predict(input_video: str, predictor=None) -> Dict[str, object]:
     if not os.path.exists(input_video):
         raise FileNotFoundError(f"Video file not found at {input_video}")
 
@@ -296,11 +282,7 @@ def deepfakes_video_predict(
     except Exception:
         pass
 
-    fallback_result = _predict_with_frame_fallback(
-        input_video,
-        predictor=predictor,
-        allow_predictor_autoload=allow_predictor_autoload,
-    )
+    fallback_result = _predict_with_frame_fallback(input_video, predictor=predictor)
     return fallback_result
 
 

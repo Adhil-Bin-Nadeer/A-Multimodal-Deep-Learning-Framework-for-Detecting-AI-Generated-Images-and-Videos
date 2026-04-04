@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import threading
 import uuid
 
 from flask import Flask, jsonify, render_template, request
@@ -15,11 +14,19 @@ project_root = os.path.dirname(backend_dir)
 sys.path.insert(0, backend_dir)
 
 from src.c2pa_checker import check_c2pa, get_c2pa_runtime_status
+from combine_model import AIEnsemblePredictor
 from forensic import (
     build_image_forensic_summary,
     build_video_forensic_summary,
     generate_forensic_report,
 )
+
+try:
+    from src.synthid import SynthIDService
+    synthid_import_error = None
+except Exception as exc:
+    SynthIDService = None
+    synthid_import_error = str(exc)
 
 
 # -------- CONFIG --------
@@ -37,15 +44,6 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 # Create uploads folder if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-SIMULATE_LAYER_DELAYS = os.environ.get("SIMULATE_LAYER_DELAYS", "0") == "1"
-ENABLE_C2PA = os.environ.get("ENABLE_C2PA", "0" if os.environ.get("RENDER") else "1") == "1"
-AI_INIT_MODE = os.environ.get("AI_INIT_MODE", "async" if os.environ.get("RENDER") else "sync").lower()
-
-
-def _maybe_delay(seconds: float) -> None:
-    if SIMULATE_LAYER_DELAYS and seconds > 0:
-        time.sleep(seconds)
-
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -59,119 +57,43 @@ def _build_temp_upload_path(original_filename: str) -> str:
 
 
 def analyze_synthid_layer(image_path):
-    _initialize_synthid_detector()
-
     if synthid_detector is None:
         return {
             'status': 'unavailable',
             'available': False,
-            'message': 'SynthID detector unavailable',
-            'error': synthid_import_error or 'SynthID detector is not available in this runtime',
+            'message': 'SynthID detector import failed',
+            'error': synthid_import_error or 'SynthID detector is not available',
         }
 
     return synthid_detector.analyze(image_path)
 
 
+# Load AI model once at startup
+print("Initializing AI Detection Models...")
 predictor = None
+try:
+    predictor = AIEnsemblePredictor()
+    print("Models loaded successfully.")
+except Exception as exc:
+    print(f"Warning: Could not load AI models: {exc}")
+    print("C2PA checking will still work, but AI detection will be unavailable.")
+
+
+# Load SynthID detector once at startup
+print("Initializing SynthID Detector...")
 synthid_detector = None
-synthid_import_error = None
-predictor_init_error = None
-predictor_initialized = False
-synthid_initialized = False
-predictor_init_in_progress = False
-synthid_init_in_progress = False
-predictor_init_lock = threading.Lock()
-synthid_init_lock = threading.Lock()
 
+if SynthIDService is None:
+    print(f"Warning: SynthID detector import failed: {synthid_import_error}")
+else:
+    synthid_detector = SynthIDService(
+        codebook_path=os.path.join(project_root, 'model_output', 'synthid', 'robust_codebook.pkl')
+    )
 
-def _initialize_ai_predictor():
-    global predictor
-    global predictor_init_error
-    global predictor_initialized
-    global predictor_init_in_progress
-
-    if predictor_initialized:
-        return
-
-    with predictor_init_lock:
-        if predictor_initialized:
-            return
-
-        predictor_init_in_progress = True
-        try:
-            print("Initializing AI Detection Models...")
-            from combine_model import AIEnsemblePredictor
-
-            predictor = AIEnsemblePredictor()
-            predictor_init_error = None
-            print("Models loaded successfully.")
-        except Exception as exc:
-            predictor = None
-            predictor_init_error = str(exc)
-            print(f"Warning: Could not load AI models: {exc}")
-            print("C2PA checking will still work, but AI detection will be unavailable.")
-        finally:
-            predictor_initialized = True
-            predictor_init_in_progress = False
-
-
-def _ensure_ai_predictor_ready() -> bool:
-    if predictor is not None:
-        return True
-
-    if predictor_initialized and predictor is None:
-        return False
-
-    if AI_INIT_MODE == "sync":
-        _initialize_ai_predictor()
-        return predictor is not None
-
-    if not predictor_init_in_progress and not predictor_initialized:
-        thread = threading.Thread(target=_initialize_ai_predictor, daemon=True)
-        thread.start()
-
-    return predictor is not None
-
-
-def _initialize_synthid_detector():
-    global synthid_detector
-    global synthid_import_error
-    global synthid_initialized
-    global synthid_init_in_progress
-
-    if synthid_initialized:
-        return
-
-    with synthid_init_lock:
-        if synthid_initialized:
-            return
-
-        synthid_init_in_progress = True
-        try:
-            print("Initializing SynthID Detector...")
-            try:
-                from src.synthid import SynthIDService
-                synthid_import_error = None
-            except Exception as exc:
-                SynthIDService = None
-                synthid_import_error = str(exc)
-
-            if SynthIDService is None:
-                synthid_detector = None
-                print(f"Warning: SynthID detector import failed: {synthid_import_error}")
-            else:
-                synthid_detector = SynthIDService(
-                    codebook_path=os.path.join(project_root, 'model_output', 'synthid', 'robust_codebook.pkl')
-                )
-
-                if synthid_detector.available:
-                    print("SynthID detector loaded successfully.")
-                else:
-                    print(f"Warning: SynthID detector unavailable: {synthid_detector.error}")
-        finally:
-            synthid_initialized = True
-            synthid_init_in_progress = False
-
+    if synthid_detector.available:
+        print("SynthID detector loaded successfully.")
+    else:
+        print(f"Warning: SynthID detector unavailable: {synthid_detector.error}")
 
 
 # -------- ROUTES --------
@@ -203,26 +125,15 @@ def video_report():
 @app.route('/api/health', methods=['GET'])
 def health_check():
     c2pa_status = get_c2pa_runtime_status()
-    runtime_initialized = predictor_initialized or synthid_initialized
-    c2pa_status['enabled'] = ENABLE_C2PA
-
     return jsonify(
         {
             'success': True,
             'status': 'ok',
-            'runtime_initialized': runtime_initialized,
-            'ai_init_mode': AI_INIT_MODE,
             'python_executable': sys.executable,
             'python_version': sys.version,
             'models': {
                 'ai_predictor_loaded': predictor is not None,
-                'ai_predictor_error': predictor_init_error,
-                'ai_predictor_initialized': predictor_initialized,
-                'ai_predictor_init_in_progress': predictor_init_in_progress,
                 'synthid_loaded': synthid_detector is not None and bool(getattr(synthid_detector, 'available', False)),
-                'synthid_error': synthid_import_error if synthid_detector is None else getattr(synthid_detector, 'error', None),
-                'synthid_initialized': synthid_initialized,
-                'synthid_init_in_progress': synthid_init_in_progress,
             },
             'c2pa': c2pa_status,
         }
@@ -265,21 +176,11 @@ def analyze_image():
 
     try:
         # ========== LAYER 1: C2PA CHECK ==========
-        _maybe_delay(1.5)
-        if ENABLE_C2PA:
-            c2pa_result = check_c2pa(filepath)
-        else:
-            c2pa_result = {
-                'available': False,
-                'enabled': False,
-                'c2pa_present': False,
-                'message': 'C2PA check disabled by configuration',
-            }
+        time.sleep(1.5)
+        c2pa_result = check_c2pa(filepath)
         result['layers']['c2pa'] = c2pa_result
 
-        if not ENABLE_C2PA:
-            result['layers']['c2pa']['status'] = 'disabled'
-        elif c2pa_result.get('available') is False:
+        if c2pa_result.get('available') is False:
             result['layers']['c2pa']['status'] = 'unavailable'
         elif c2pa_result.get('c2pa_present'):
             result['layers']['c2pa']['status'] = 'verified' if c2pa_result.get('valid') else 'present'
@@ -296,13 +197,13 @@ def analyze_image():
             else:
                 result['final_verdict'] = 'AI Generated (C2PA Metadata Present)'
 
-            _maybe_delay(0.5)
+            time.sleep(0.5)
             result['layers']['synthid'] = {'status': 'skipped', 'reason': 'C2PA metadata present'}
-            _maybe_delay(0.5)
+            time.sleep(0.5)
             result['layers']['ai_model'] = {'status': 'skipped', 'reason': 'C2PA metadata present'}
         else:
             # ========== LAYER 2: SYNTHID ==========
-            _maybe_delay(1.0)
+            time.sleep(1.0)
             synthid_result = analyze_synthid_layer(filepath)
             result['layers']['synthid'] = synthid_result
             synthid_detected = (
@@ -323,11 +224,8 @@ def analyze_image():
                 }
             else:
                 # ========== LAYER 3: AI MODEL ==========
-                _maybe_delay(2.0)
-
-                ai_predictor_ready = _ensure_ai_predictor_ready()
-
-                if ai_predictor_ready and predictor is not None:
+                time.sleep(2.0)
+                if predictor is not None:
                     model_result = predictor.predict(filepath, return_details=True)
                     if model_result.get('status') == 'complete':
                         result['layers']['ai_model'] = {
@@ -348,16 +246,9 @@ def analyze_image():
                             'error': model_result.get('error', 'AI model inference failed'),
                         }
                 else:
-                    if predictor_init_error:
-                        model_error = predictor_init_error
-                        model_status = 'error'
-                    else:
-                        model_error = 'AI model warmup in progress. Please retry in 20-60 seconds.'
-                        model_status = 'warming_up'
-
                     result['layers']['ai_model'] = {
-                        'status': model_status,
-                        'error': model_error,
+                        'status': 'error',
+                        'error': 'AI model not loaded',
                     }
 
                 ai_model_result = result['layers']['ai_model']
@@ -395,10 +286,6 @@ def analyze_image():
                         result['final_verdict'] = model_label or 'Unknown'
                 elif c2pa_result.get('c2pa_present'):
                     result['final_verdict'] = 'Unknown (Signed provenance present)'
-                elif ai_model_result.get('status') == 'warming_up':
-                    result['confidence'] = 0.0
-                    result['is_ai_generated'] = False
-                    result['final_verdict'] = 'Pending (AI model warming up)'
                 else:
                     result['final_verdict'] = 'Unknown (Model unavailable)'
 
@@ -435,34 +322,10 @@ def analyze_video():
     filepath = _build_temp_upload_path(filename)
     file.save(filepath)
 
-    dedicated_onnx = os.path.join(backend_dir, 'checkpoints', 'efficientnet.onnx')
-    dedicated_pth = os.path.join(backend_dir, 'checkpoints', 'model.pth')
-    has_dedicated_checkpoints = os.path.exists(dedicated_onnx) and os.path.exists(dedicated_pth)
-
-    if predictor is None and not has_dedicated_checkpoints:
-        _ensure_ai_predictor_ready()
-
-    if predictor is None and not has_dedicated_checkpoints and predictor_init_error is None:
-        if predictor_init_in_progress or not predictor_initialized:
-            if not predictor_init_in_progress:
-                _ensure_ai_predictor_ready()
-            result = {
-                'success': False,
-                'error': 'Video model warmup in progress. Please retry in 20-60 seconds.',
-                'code': 'WARMING_UP',
-            }
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            return jsonify(result), 503
-
     try:
         from video_detect_standalone import deepfakes_video_predict
 
-        video_result = deepfakes_video_predict(
-            filepath,
-            predictor=predictor,
-            allow_predictor_autoload=False,
-        )
+        video_result = deepfakes_video_predict(filepath, predictor=predictor)
         if isinstance(video_result, dict):
             result = {'success': True, **video_result}
             result['forensic_summary'] = build_video_forensic_summary(result)

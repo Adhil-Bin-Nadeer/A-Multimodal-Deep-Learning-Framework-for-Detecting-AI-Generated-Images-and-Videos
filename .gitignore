@@ -33,6 +33,13 @@ wheels/
 *.pkl
 model_output/
 backend/checkpoints/
+!ai_detector_meta_learner.joblib
+!polynomial_transformer.joblib
+!model_output/
+!model_output/resnet50_finetuned_benchmark.pth
+!model_output/resnet50_final.pth
+!model_output/synthid/
+!model_output/synthid/robust_codebook.pkl
 
 # Frontend
 frontend/node_modules/
