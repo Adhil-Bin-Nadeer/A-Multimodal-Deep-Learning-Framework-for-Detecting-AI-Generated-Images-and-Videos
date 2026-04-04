@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import threading
 import uuid
 
 from flask import Flask, jsonify, render_template, request
@@ -14,19 +15,11 @@ project_root = os.path.dirname(backend_dir)
 sys.path.insert(0, backend_dir)
 
 from src.c2pa_checker import check_c2pa, get_c2pa_runtime_status
-from combine_model import AIEnsemblePredictor
 from forensic import (
     build_image_forensic_summary,
     build_video_forensic_summary,
     generate_forensic_report,
 )
-
-try:
-    from src.synthid import SynthIDService
-    synthid_import_error = None
-except Exception as exc:
-    SynthIDService = None
-    synthid_import_error = str(exc)
 
 
 # -------- CONFIG --------
@@ -68,32 +61,64 @@ def analyze_synthid_layer(image_path):
     return synthid_detector.analyze(image_path)
 
 
-# Load AI model once at startup
-print("Initializing AI Detection Models...")
 predictor = None
-try:
-    predictor = AIEnsemblePredictor()
-    print("Models loaded successfully.")
-except Exception as exc:
-    print(f"Warning: Could not load AI models: {exc}")
-    print("C2PA checking will still work, but AI detection will be unavailable.")
-
-
-# Load SynthID detector once at startup
-print("Initializing SynthID Detector...")
 synthid_detector = None
+synthid_import_error = None
+predictor_init_error = None
+runtime_initialized = False
+runtime_init_lock = threading.Lock()
 
-if SynthIDService is None:
-    print(f"Warning: SynthID detector import failed: {synthid_import_error}")
-else:
-    synthid_detector = SynthIDService(
-        codebook_path=os.path.join(project_root, 'model_output', 'synthid', 'robust_codebook.pkl')
-    )
 
-    if synthid_detector.available:
-        print("SynthID detector loaded successfully.")
-    else:
-        print(f"Warning: SynthID detector unavailable: {synthid_detector.error}")
+def _initialize_runtime_components():
+    global predictor
+    global synthid_detector
+    global synthid_import_error
+    global predictor_init_error
+    global runtime_initialized
+
+    if runtime_initialized:
+        return
+
+    with runtime_init_lock:
+        if runtime_initialized:
+            return
+
+        print("Initializing AI Detection Models...")
+        try:
+            from combine_model import AIEnsemblePredictor
+
+            predictor = AIEnsemblePredictor()
+            predictor_init_error = None
+            print("Models loaded successfully.")
+        except Exception as exc:
+            predictor = None
+            predictor_init_error = str(exc)
+            print(f"Warning: Could not load AI models: {exc}")
+            print("C2PA checking will still work, but AI detection will be unavailable.")
+
+        print("Initializing SynthID Detector...")
+        try:
+            from src.synthid import SynthIDService
+            synthid_import_error = None
+        except Exception as exc:
+            SynthIDService = None
+            synthid_import_error = str(exc)
+
+        if SynthIDService is None:
+            synthid_detector = None
+            print(f"Warning: SynthID detector import failed: {synthid_import_error}")
+        else:
+            synthid_detector = SynthIDService(
+                codebook_path=os.path.join(project_root, 'model_output', 'synthid', 'robust_codebook.pkl')
+            )
+
+            if synthid_detector.available:
+                print("SynthID detector loaded successfully.")
+            else:
+                print(f"Warning: SynthID detector unavailable: {synthid_detector.error}")
+
+        runtime_initialized = True
+
 
 
 # -------- ROUTES --------
@@ -129,11 +154,14 @@ def health_check():
         {
             'success': True,
             'status': 'ok',
+            'runtime_initialized': runtime_initialized,
             'python_executable': sys.executable,
             'python_version': sys.version,
             'models': {
                 'ai_predictor_loaded': predictor is not None,
+                'ai_predictor_error': predictor_init_error,
                 'synthid_loaded': synthid_detector is not None and bool(getattr(synthid_detector, 'available', False)),
+                'synthid_error': synthid_import_error if synthid_detector is None else getattr(synthid_detector, 'error', None),
             },
             'c2pa': c2pa_status,
         }
@@ -146,6 +174,8 @@ def analyze_image():
     Main analysis endpoint.
     Pipeline: C2PA Check -> SynthID -> AI Model
     """
+    _initialize_runtime_components()
+
     if 'file' not in request.files:
         return jsonify({'success': False, 'error': 'No file provided'}), 400
 
@@ -308,6 +338,8 @@ def analyze_video():
     Video deepfake detection endpoint.
     Accepts a video file, runs detection, and returns the result.
     """
+    _initialize_runtime_components()
+
     if 'file' not in request.files:
         return jsonify({'success': False, 'error': 'No file provided'}), 400
     file = request.files['file']
