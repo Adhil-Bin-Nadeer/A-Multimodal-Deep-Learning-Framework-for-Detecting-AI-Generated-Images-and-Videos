@@ -92,6 +92,12 @@ class AIEnsemblePredictor:
         self._load_meta_learner()
 
     def _load_vit(self):
+        # Skip ViT on environments where download speed causes port timeout
+        if os.environ.get("SKIP_VIT", "0") == "1":
+            self.vit_error = "ViT skipped on this environment (SKIP_VIT=1)"
+            print("==> ViT loading skipped. Using ResNet + forensics only.")
+            return
+
         try:
             self.vit = AutoModelForImageClassification.from_pretrained(VIT_NAME).to(self.device).eval()
             self.vit_processor = AutoImageProcessor.from_pretrained(VIT_NAME)
