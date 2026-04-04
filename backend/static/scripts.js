@@ -139,6 +139,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
             if (!result.success) {
                 log(`❌ Error: ${result.error}`);
+                scanBtn.disabled = false;
+                scanBtn.textContent = 'Start Scan';
+                fileInfo.textContent = 'Fix the issue and try again.';
                 return;
             }
 
@@ -215,6 +218,9 @@ document.addEventListener('DOMContentLoaded', function() {
         } catch (error) {
             log(`❌ Network error: ${error.message}`);
             console.error('Analysis error:', error);
+            scanBtn.disabled = false;
+            scanBtn.textContent = 'Start Scan';
+            fileInfo.textContent = 'Connection problem. Please try again.';
         }
     }
 

@@ -37,6 +37,13 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 # Create uploads folder if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+SIMULATE_LAYER_DELAYS = os.environ.get("SIMULATE_LAYER_DELAYS", "0") == "1"
+
+
+def _maybe_delay(seconds: float) -> None:
+    if SIMULATE_LAYER_DELAYS and seconds > 0:
+        time.sleep(seconds)
+
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -50,12 +57,14 @@ def _build_temp_upload_path(original_filename: str) -> str:
 
 
 def analyze_synthid_layer(image_path):
+    _initialize_synthid_detector()
+
     if synthid_detector is None:
         return {
             'status': 'unavailable',
             'available': False,
-            'message': 'SynthID detector import failed',
-            'error': synthid_import_error or 'SynthID detector is not available',
+            'message': 'SynthID detector unavailable',
+            'error': synthid_import_error or 'SynthID detector is not available in this runtime',
         }
 
     return synthid_detector.analyze(image_path)
@@ -65,26 +74,30 @@ predictor = None
 synthid_detector = None
 synthid_import_error = None
 predictor_init_error = None
-runtime_initialized = False
-runtime_init_lock = threading.Lock()
+predictor_initialized = False
+synthid_initialized = False
+predictor_init_in_progress = False
+synthid_init_in_progress = False
+predictor_init_lock = threading.Lock()
+synthid_init_lock = threading.Lock()
 
 
-def _initialize_runtime_components():
+def _initialize_ai_predictor():
     global predictor
-    global synthid_detector
-    global synthid_import_error
     global predictor_init_error
-    global runtime_initialized
+    global predictor_initialized
+    global predictor_init_in_progress
 
-    if runtime_initialized:
+    if predictor_initialized:
         return
 
-    with runtime_init_lock:
-        if runtime_initialized:
+    with predictor_init_lock:
+        if predictor_initialized:
             return
 
-        print("Initializing AI Detection Models...")
+        predictor_init_in_progress = True
         try:
+            print("Initializing AI Detection Models...")
             from combine_model import AIEnsemblePredictor
 
             predictor = AIEnsemblePredictor()
@@ -95,29 +108,49 @@ def _initialize_runtime_components():
             predictor_init_error = str(exc)
             print(f"Warning: Could not load AI models: {exc}")
             print("C2PA checking will still work, but AI detection will be unavailable.")
+        finally:
+            predictor_initialized = True
+            predictor_init_in_progress = False
 
-        print("Initializing SynthID Detector...")
+
+def _initialize_synthid_detector():
+    global synthid_detector
+    global synthid_import_error
+    global synthid_initialized
+    global synthid_init_in_progress
+
+    if synthid_initialized:
+        return
+
+    with synthid_init_lock:
+        if synthid_initialized:
+            return
+
+        synthid_init_in_progress = True
         try:
-            from src.synthid import SynthIDService
-            synthid_import_error = None
-        except Exception as exc:
-            SynthIDService = None
-            synthid_import_error = str(exc)
+            print("Initializing SynthID Detector...")
+            try:
+                from src.synthid import SynthIDService
+                synthid_import_error = None
+            except Exception as exc:
+                SynthIDService = None
+                synthid_import_error = str(exc)
 
-        if SynthIDService is None:
-            synthid_detector = None
-            print(f"Warning: SynthID detector import failed: {synthid_import_error}")
-        else:
-            synthid_detector = SynthIDService(
-                codebook_path=os.path.join(project_root, 'model_output', 'synthid', 'robust_codebook.pkl')
-            )
-
-            if synthid_detector.available:
-                print("SynthID detector loaded successfully.")
+            if SynthIDService is None:
+                synthid_detector = None
+                print(f"Warning: SynthID detector import failed: {synthid_import_error}")
             else:
-                print(f"Warning: SynthID detector unavailable: {synthid_detector.error}")
+                synthid_detector = SynthIDService(
+                    codebook_path=os.path.join(project_root, 'model_output', 'synthid', 'robust_codebook.pkl')
+                )
 
-        runtime_initialized = True
+                if synthid_detector.available:
+                    print("SynthID detector loaded successfully.")
+                else:
+                    print(f"Warning: SynthID detector unavailable: {synthid_detector.error}")
+        finally:
+            synthid_initialized = True
+            synthid_init_in_progress = False
 
 
 
@@ -150,6 +183,8 @@ def video_report():
 @app.route('/api/health', methods=['GET'])
 def health_check():
     c2pa_status = get_c2pa_runtime_status()
+    runtime_initialized = predictor_initialized or synthid_initialized
+
     return jsonify(
         {
             'success': True,
@@ -160,8 +195,12 @@ def health_check():
             'models': {
                 'ai_predictor_loaded': predictor is not None,
                 'ai_predictor_error': predictor_init_error,
+                'ai_predictor_initialized': predictor_initialized,
+                'ai_predictor_init_in_progress': predictor_init_in_progress,
                 'synthid_loaded': synthid_detector is not None and bool(getattr(synthid_detector, 'available', False)),
                 'synthid_error': synthid_import_error if synthid_detector is None else getattr(synthid_detector, 'error', None),
+                'synthid_initialized': synthid_initialized,
+                'synthid_init_in_progress': synthid_init_in_progress,
             },
             'c2pa': c2pa_status,
         }
@@ -174,8 +213,6 @@ def analyze_image():
     Main analysis endpoint.
     Pipeline: C2PA Check -> SynthID -> AI Model
     """
-    _initialize_runtime_components()
-
     if 'file' not in request.files:
         return jsonify({'success': False, 'error': 'No file provided'}), 400
 
@@ -206,7 +243,7 @@ def analyze_image():
 
     try:
         # ========== LAYER 1: C2PA CHECK ==========
-        time.sleep(1.5)
+        _maybe_delay(1.5)
         c2pa_result = check_c2pa(filepath)
         result['layers']['c2pa'] = c2pa_result
 
@@ -227,13 +264,13 @@ def analyze_image():
             else:
                 result['final_verdict'] = 'AI Generated (C2PA Metadata Present)'
 
-            time.sleep(0.5)
+            _maybe_delay(0.5)
             result['layers']['synthid'] = {'status': 'skipped', 'reason': 'C2PA metadata present'}
-            time.sleep(0.5)
+            _maybe_delay(0.5)
             result['layers']['ai_model'] = {'status': 'skipped', 'reason': 'C2PA metadata present'}
         else:
             # ========== LAYER 2: SYNTHID ==========
-            time.sleep(1.0)
+            _maybe_delay(1.0)
             synthid_result = analyze_synthid_layer(filepath)
             result['layers']['synthid'] = synthid_result
             synthid_detected = (
@@ -254,7 +291,11 @@ def analyze_image():
                 }
             else:
                 # ========== LAYER 3: AI MODEL ==========
-                time.sleep(2.0)
+                _maybe_delay(2.0)
+
+                if predictor is None:
+                    _initialize_ai_predictor()
+
                 if predictor is not None:
                     model_result = predictor.predict(filepath, return_details=True)
                     if model_result.get('status') == 'complete':
@@ -278,7 +319,7 @@ def analyze_image():
                 else:
                     result['layers']['ai_model'] = {
                         'status': 'error',
-                        'error': 'AI model not loaded',
+                        'error': predictor_init_error or 'AI model not loaded',
                     }
 
                 ai_model_result = result['layers']['ai_model']
@@ -338,8 +379,6 @@ def analyze_video():
     Video deepfake detection endpoint.
     Accepts a video file, runs detection, and returns the result.
     """
-    _initialize_runtime_components()
-
     if 'file' not in request.files:
         return jsonify({'success': False, 'error': 'No file provided'}), 400
     file = request.files['file']
@@ -354,10 +393,21 @@ def analyze_video():
     filepath = _build_temp_upload_path(filename)
     file.save(filepath)
 
+    dedicated_onnx = os.path.join(backend_dir, 'checkpoints', 'efficientnet.onnx')
+    dedicated_pth = os.path.join(backend_dir, 'checkpoints', 'model.pth')
+    has_dedicated_checkpoints = os.path.exists(dedicated_onnx) and os.path.exists(dedicated_pth)
+
+    if predictor is None and not has_dedicated_checkpoints:
+        _initialize_ai_predictor()
+
     try:
         from video_detect_standalone import deepfakes_video_predict
 
-        video_result = deepfakes_video_predict(filepath, predictor=predictor)
+        video_result = deepfakes_video_predict(
+            filepath,
+            predictor=predictor,
+            allow_predictor_autoload=False,
+        )
         if isinstance(video_result, dict):
             result = {'success': True, **video_result}
             result['forensic_summary'] = build_video_forensic_summary(result)

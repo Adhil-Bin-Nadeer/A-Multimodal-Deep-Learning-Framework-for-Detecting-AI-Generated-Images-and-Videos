@@ -60,6 +60,13 @@ class AIEnsemblePredictor:
             raise ValueError("RESNET_AI_INDEX must be 0 or 1")
         self.use_tta = os.environ.get("ENABLE_TTA", "1") == "1"
 
+        # Render free instances often time out when downloading large remote models at runtime.
+        enable_vit_env = os.environ.get("ENABLE_VIT")
+        if enable_vit_env is None:
+            enable_vit_env = "0" if os.environ.get("RENDER") else "1"
+        self.enable_vit = enable_vit_env == "1"
+        self.enable_meta_learner = os.environ.get("ENABLE_META_LEARNER", "1") == "1"
+
         self.vit = None
         self.vit_processor = None
         self.vit_ai_index = None
@@ -88,8 +95,17 @@ class AIEnsemblePredictor:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
-        self._load_vit()
-        self._load_meta_learner()
+        if self.enable_vit:
+            self._load_vit()
+        else:
+            self.vit_error = "ViT loading disabled by ENABLE_VIT configuration."
+            print("ViT loading disabled; continuing with ResNet and forensic modules.")
+
+        if self.enable_meta_learner:
+            self._load_meta_learner()
+        else:
+            self.meta_error = "Meta-learner disabled by ENABLE_META_LEARNER configuration."
+            print("Meta-learner loading disabled by configuration.")
 
     def _load_vit(self):
         try:
