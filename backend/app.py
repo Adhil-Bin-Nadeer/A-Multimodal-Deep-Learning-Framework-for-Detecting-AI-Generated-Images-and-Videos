@@ -38,6 +38,8 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 SIMULATE_LAYER_DELAYS = os.environ.get("SIMULATE_LAYER_DELAYS", "0") == "1"
+ENABLE_C2PA = os.environ.get("ENABLE_C2PA", "0" if os.environ.get("RENDER") else "1") == "1"
+AI_INIT_MODE = os.environ.get("AI_INIT_MODE", "async" if os.environ.get("RENDER") else "sync").lower()
 
 
 def _maybe_delay(seconds: float) -> None:
@@ -113,6 +115,24 @@ def _initialize_ai_predictor():
             predictor_init_in_progress = False
 
 
+def _ensure_ai_predictor_ready() -> bool:
+    if predictor is not None:
+        return True
+
+    if predictor_initialized and predictor is None:
+        return False
+
+    if AI_INIT_MODE == "sync":
+        _initialize_ai_predictor()
+        return predictor is not None
+
+    if not predictor_init_in_progress and not predictor_initialized:
+        thread = threading.Thread(target=_initialize_ai_predictor, daemon=True)
+        thread.start()
+
+    return predictor is not None
+
+
 def _initialize_synthid_detector():
     global synthid_detector
     global synthid_import_error
@@ -184,12 +204,14 @@ def video_report():
 def health_check():
     c2pa_status = get_c2pa_runtime_status()
     runtime_initialized = predictor_initialized or synthid_initialized
+    c2pa_status['enabled'] = ENABLE_C2PA
 
     return jsonify(
         {
             'success': True,
             'status': 'ok',
             'runtime_initialized': runtime_initialized,
+            'ai_init_mode': AI_INIT_MODE,
             'python_executable': sys.executable,
             'python_version': sys.version,
             'models': {
@@ -244,10 +266,20 @@ def analyze_image():
     try:
         # ========== LAYER 1: C2PA CHECK ==========
         _maybe_delay(1.5)
-        c2pa_result = check_c2pa(filepath)
+        if ENABLE_C2PA:
+            c2pa_result = check_c2pa(filepath)
+        else:
+            c2pa_result = {
+                'available': False,
+                'enabled': False,
+                'c2pa_present': False,
+                'message': 'C2PA check disabled by configuration',
+            }
         result['layers']['c2pa'] = c2pa_result
 
-        if c2pa_result.get('available') is False:
+        if not ENABLE_C2PA:
+            result['layers']['c2pa']['status'] = 'disabled'
+        elif c2pa_result.get('available') is False:
             result['layers']['c2pa']['status'] = 'unavailable'
         elif c2pa_result.get('c2pa_present'):
             result['layers']['c2pa']['status'] = 'verified' if c2pa_result.get('valid') else 'present'
@@ -293,10 +325,9 @@ def analyze_image():
                 # ========== LAYER 3: AI MODEL ==========
                 _maybe_delay(2.0)
 
-                if predictor is None:
-                    _initialize_ai_predictor()
+                ai_predictor_ready = _ensure_ai_predictor_ready()
 
-                if predictor is not None:
+                if ai_predictor_ready and predictor is not None:
                     model_result = predictor.predict(filepath, return_details=True)
                     if model_result.get('status') == 'complete':
                         result['layers']['ai_model'] = {
@@ -317,9 +348,16 @@ def analyze_image():
                             'error': model_result.get('error', 'AI model inference failed'),
                         }
                 else:
+                    if predictor_init_error:
+                        model_error = predictor_init_error
+                        model_status = 'error'
+                    else:
+                        model_error = 'AI model warmup in progress. Please retry in 20-60 seconds.'
+                        model_status = 'warming_up'
+
                     result['layers']['ai_model'] = {
-                        'status': 'error',
-                        'error': predictor_init_error or 'AI model not loaded',
+                        'status': model_status,
+                        'error': model_error,
                     }
 
                 ai_model_result = result['layers']['ai_model']
@@ -357,6 +395,10 @@ def analyze_image():
                         result['final_verdict'] = model_label or 'Unknown'
                 elif c2pa_result.get('c2pa_present'):
                     result['final_verdict'] = 'Unknown (Signed provenance present)'
+                elif ai_model_result.get('status') == 'warming_up':
+                    result['confidence'] = 0.0
+                    result['is_ai_generated'] = False
+                    result['final_verdict'] = 'Pending (AI model warming up)'
                 else:
                     result['final_verdict'] = 'Unknown (Model unavailable)'
 
@@ -398,7 +440,20 @@ def analyze_video():
     has_dedicated_checkpoints = os.path.exists(dedicated_onnx) and os.path.exists(dedicated_pth)
 
     if predictor is None and not has_dedicated_checkpoints:
-        _initialize_ai_predictor()
+        _ensure_ai_predictor_ready()
+
+    if predictor is None and not has_dedicated_checkpoints and predictor_init_error is None:
+        if predictor_init_in_progress or not predictor_initialized:
+            if not predictor_init_in_progress:
+                _ensure_ai_predictor_ready()
+            result = {
+                'success': False,
+                'error': 'Video model warmup in progress. Please retry in 20-60 seconds.',
+                'code': 'WARMING_UP',
+            }
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            return jsonify(result), 503
 
     try:
         from video_detect_standalone import deepfakes_video_predict
