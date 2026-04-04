@@ -8,9 +8,41 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 
+# -------- PATH SETUP --------
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(backend_dir)
+sys.path.insert(0, backend_dir)
 
-# -------- BACKGROUND MODEL DOWNLOAD --------
-def download_models():
+# -------- FLASK APP (created immediately, no heavy work) --------
+UPLOAD_FOLDER = os.path.join(backend_dir, 'uploads')
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
+
+app = Flask(
+    __name__,
+    template_folder=os.path.join(backend_dir, 'templates'),
+    static_folder=os.path.join(backend_dir, 'static'),
+)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# -------- GLOBAL MODEL STATE --------
+predictor = None
+synthid_detector = None
+synthid_import_error = None
+_models_ready = False
+_models_loading = False
+
+
+# -------- BACKGROUND INIT (download + load, runs after port binds) --------
+def initialize_all():
+    global predictor, synthid_detector, synthid_import_error
+    global _models_ready, _models_loading
+
+    _models_loading = True
+    print("==> Background: Starting model download + load...")
+
+    # Step 1: Download missing files from HuggingFace
     try:
         from huggingface_hub import hf_hub_download
         repo = "Adhil786/deepfake-models"
@@ -24,63 +56,54 @@ def download_models():
         ]
 
         for filepath in files:
-            if not Path(filepath).exists():
-                print(f"Downloading {filepath}...")
-                Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+            full_path = os.path.join(project_root, filepath)
+            if not Path(full_path).exists():
+                print(f"==> Downloading {filepath}...")
+                Path(full_path).parent.mkdir(parents=True, exist_ok=True)
                 hf_hub_download(
                     repo_id=repo,
                     filename=filepath,
-                    local_dir=".",
+                    local_dir=project_root,
                     token=token,
                 )
-                print(f"✅ Downloaded {filepath}")
+                print(f"==> ✅ Downloaded {filepath}")
             else:
-                print(f"✅ Already exists: {filepath}")
+                print(f"==> ✅ Already exists: {filepath}")
     except Exception as e:
-        print(f"❌ Model download error: {e}")
+        print(f"==> ❌ Download error: {e}")
 
-# Start download in background — server binds port immediately
-threading.Thread(target=download_models, daemon=True).start()
+    # Step 2: Load AI predictor
+    try:
+        from combine_model import AIEnsemblePredictor
+        predictor = AIEnsemblePredictor()
+        print("==> ✅ AI predictor loaded.")
+    except Exception as e:
+        print(f"==> ❌ AI predictor failed: {e}")
 
+    # Step 3: Load SynthID
+    try:
+        from src.synthid import SynthIDService
+        synthid_detector = SynthIDService(
+            codebook_path=os.path.join(project_root, 'model_output', 'synthid', 'robust_codebook.pkl')
+        )
+        if synthid_detector.available:
+            print("==> ✅ SynthID detector loaded.")
+        else:
+            print(f"==> ⚠️ SynthID unavailable: {synthid_detector.error}")
+    except Exception as e:
+        synthid_import_error = str(e)
+        print(f"==> ❌ SynthID import failed: {e}")
 
-# Add backend to path for imports
-backend_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(backend_dir)
-
-sys.path.insert(0, backend_dir)
-
-from src.c2pa_checker import check_c2pa, get_c2pa_runtime_status
-from combine_model import AIEnsemblePredictor
-from forensic import (
-    build_image_forensic_summary,
-    build_video_forensic_summary,
-    generate_forensic_report,
-)
-
-try:
-    from src.synthid import SynthIDService
-    synthid_import_error = None
-except Exception as exc:
-    SynthIDService = None
-    synthid_import_error = str(exc)
-
-
-# -------- CONFIG --------
-UPLOAD_FOLDER = os.path.join(backend_dir, 'uploads')
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
-
-app = Flask(
-    __name__,
-    template_folder=os.path.join(backend_dir, 'templates'),
-    static_folder=os.path.join(backend_dir, 'static'),
-)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
-
-# Create uploads folder if it doesn't exist
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    _models_loading = False
+    _models_ready = True
+    print("==> ✅ All models ready.")
 
 
+# Start background init — port binds before this finishes
+threading.Thread(target=initialize_all, daemon=True).start()
+
+
+# -------- HELPERS --------
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -88,8 +111,7 @@ def allowed_file(filename):
 def _build_temp_upload_path(original_filename: str) -> str:
     safe_name = secure_filename(original_filename) or "upload.bin"
     _, ext = os.path.splitext(safe_name)
-    temp_name = f"{uuid.uuid4().hex}{ext.lower()}"
-    return os.path.join(app.config['UPLOAD_FOLDER'], temp_name)
+    return os.path.join(app.config['UPLOAD_FOLDER'], f"{uuid.uuid4().hex}{ext.lower()}")
 
 
 def analyze_synthid_layer(image_path):
@@ -97,39 +119,10 @@ def analyze_synthid_layer(image_path):
         return {
             'status': 'unavailable',
             'available': False,
-            'message': 'SynthID detector import failed',
-            'error': synthid_import_error or 'SynthID detector is not available',
+            'message': 'SynthID detector not yet loaded' if _models_loading else 'SynthID detector import failed',
+            'error': synthid_import_error or 'SynthID not available',
         }
-
     return synthid_detector.analyze(image_path)
-
-
-# Load AI model once at startup
-print("Initializing AI Detection Models...")
-predictor = None
-try:
-    predictor = AIEnsemblePredictor()
-    print("Models loaded successfully.")
-except Exception as exc:
-    print(f"Warning: Could not load AI models: {exc}")
-    print("C2PA checking will still work, but AI detection will be unavailable.")
-
-
-# Load SynthID detector once at startup
-print("Initializing SynthID Detector...")
-synthid_detector = None
-
-if SynthIDService is None:
-    print(f"Warning: SynthID detector import failed: {synthid_import_error}")
-else:
-    synthid_detector = SynthIDService(
-        codebook_path=os.path.join(project_root, 'model_output', 'synthid', 'robust_codebook.pkl')
-    )
-
-    if synthid_detector.available:
-        print("SynthID detector loaded successfully.")
-    else:
-        print(f"Warning: SynthID detector unavailable: {synthid_detector.error}")
 
 
 # -------- ROUTES --------
@@ -160,20 +153,31 @@ def video_report():
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    c2pa_status = get_c2pa_runtime_status()
-    return jsonify(
-        {
-            'success': True,
-            'status': 'ok',
-            'python_executable': sys.executable,
-            'python_version': sys.version,
-            'models': {
-                'ai_predictor_loaded': predictor is not None,
-                'synthid_loaded': synthid_detector is not None and bool(getattr(synthid_detector, 'available', False)),
-            },
-            'c2pa': c2pa_status,
-        }
-    )
+    try:
+        from src.c2pa_checker import get_c2pa_runtime_status
+        c2pa_status = get_c2pa_runtime_status()
+    except Exception as e:
+        c2pa_status = {'error': str(e)}
+
+    return jsonify({
+        'success': True,
+        'status': 'ok',
+        'python_executable': sys.executable,
+        'python_version': sys.version,
+        'runtime_initialized': _models_ready,
+        'ai_init_mode': 'async',
+        'models': {
+            'ai_predictor_loaded': predictor is not None,
+            'ai_predictor_initialized': predictor is not None,
+            'ai_predictor_init_in_progress': _models_loading,
+            'ai_predictor_error': None,
+            'synthid_loaded': synthid_detector is not None and bool(getattr(synthid_detector, 'available', False)),
+            'synthid_initialized': synthid_detector is not None,
+            'synthid_init_in_progress': _models_loading,
+            'synthid_error': synthid_import_error,
+        },
+        'c2pa': c2pa_status,
+    })
 
 
 @app.route('/api/analyze', methods=['POST'])
@@ -195,11 +199,7 @@ def analyze_image():
     result = {
         'success': True,
         'filename': filename,
-        'layers': {
-            'c2pa': None,
-            'synthid': None,
-            'ai_model': None,
-        },
+        'layers': {'c2pa': None, 'synthid': None, 'ai_model': None},
         'explainability': None,
         'final_verdict': None,
         'confidence': 0.0,
@@ -207,6 +207,8 @@ def analyze_image():
     }
 
     try:
+        from src.c2pa_checker import check_c2pa
+
         time.sleep(1.5)
         c2pa_result = check_c2pa(filepath)
         result['layers']['c2pa'] = c2pa_result
@@ -223,11 +225,11 @@ def analyze_image():
         if c2pa_metadata_present:
             result['confidence'] = 100.0
             result['is_ai_generated'] = True
-            if c2pa_result.get('ai_generated'):
-                result['final_verdict'] = 'AI Generated (C2PA AI Declaration)'
-            else:
-                result['final_verdict'] = 'AI Generated (C2PA Metadata Present)'
-
+            result['final_verdict'] = (
+                'AI Generated (C2PA AI Declaration)'
+                if c2pa_result.get('ai_generated')
+                else 'AI Generated (C2PA Metadata Present)'
+            )
             time.sleep(0.5)
             result['layers']['synthid'] = {'status': 'skipped', 'reason': 'C2PA metadata present'}
             time.sleep(0.5)
@@ -242,16 +244,10 @@ def analyze_image():
             )
 
             if synthid_detected:
-                result['confidence'] = max(
-                    result['confidence'],
-                    synthid_result.get('confidence', 0.0),
-                )
+                result['confidence'] = max(result['confidence'], synthid_result.get('confidence', 0.0))
                 result['is_ai_generated'] = True
                 result['final_verdict'] = 'AI Generated (SynthID Watermark Detected)'
-                result['layers']['ai_model'] = {
-                    'status': 'skipped',
-                    'reason': 'SynthID watermark detected',
-                }
+                result['layers']['ai_model'] = {'status': 'skipped', 'reason': 'SynthID watermark detected'}
             else:
                 time.sleep(2.0)
                 if predictor is not None:
@@ -266,9 +262,7 @@ def analyze_image():
                             'model_scores': model_result.get('model_scores', {}),
                             'forensic_modules': model_result.get('forensic_modules', {}),
                         }
-                        result['explainability'] = {
-                            'artifacts': model_result.get('artifacts', []),
-                        }
+                        result['explainability'] = {'artifacts': model_result.get('artifacts', [])}
                     else:
                         result['layers']['ai_model'] = {
                             'status': 'error',
@@ -277,7 +271,7 @@ def analyze_image():
                 else:
                     result['layers']['ai_model'] = {
                         'status': 'error',
-                        'error': 'AI model not loaded',
+                        'error': 'AI model still loading, please try again shortly.' if _models_loading else 'AI model not loaded',
                     }
 
                 ai_model_result = result['layers']['ai_model']
@@ -289,7 +283,7 @@ def analyze_image():
                     supporting_modules = forensic_modules.get('supporting_modules', []) or []
                     forensics_only_score = float(model_scores.get('forensics_only_ai_score', 0.0))
 
-                    low_confidence_model_only_ai = (
+                    low_confidence_override = (
                         model_label == 'AI Image' and
                         model_confidence < 60.0 and
                         not supporting_modules and
@@ -298,7 +292,7 @@ def analyze_image():
                         not synthid_result.get('is_watermarked')
                     )
 
-                    if low_confidence_model_only_ai:
+                    if low_confidence_override:
                         ai_model_result['pipeline_override'] = {
                             'applied': True,
                             'reason': 'Low-confidence model-only AI prediction with negative SynthID and weak forensic support',
@@ -307,9 +301,7 @@ def analyze_image():
                         result['is_ai_generated'] = False
                         result['final_verdict'] = 'Real Image'
                     else:
-                        ai_model_result['pipeline_override'] = {
-                            'applied': False,
-                        }
+                        ai_model_result['pipeline_override'] = {'applied': False}
                         result['confidence'] = model_confidence
                         result['is_ai_generated'] = model_label == 'AI Image'
                         result['final_verdict'] = model_label or 'Unknown'
@@ -322,8 +314,11 @@ def analyze_image():
         result['success'] = False
         result['error'] = str(exc)
     else:
-        result['forensic_summary'] = build_image_forensic_summary(result)
-
+        try:
+            from forensic import build_image_forensic_summary
+            result['forensic_summary'] = build_image_forensic_summary(result)
+        except Exception:
+            pass
     finally:
         if os.path.exists(filepath):
             os.remove(filepath)
@@ -349,6 +344,7 @@ def analyze_video():
 
     try:
         from video_detect_standalone import deepfakes_video_predict
+        from forensic import build_video_forensic_summary
 
         video_result = deepfakes_video_predict(filepath, predictor=predictor)
         if isinstance(video_result, dict):
@@ -361,6 +357,7 @@ def analyze_video():
     finally:
         if os.path.exists(filepath):
             os.remove(filepath)
+
     return jsonify(result)
 
 
@@ -371,18 +368,16 @@ def get_forensic_report():
         if not analysis_result:
             return jsonify({'success': False, 'error': 'No analysis data provided'}), 400
 
+        from forensic import generate_forensic_report
         report = generate_forensic_report(analysis_result)
         return jsonify(report)
-
     except Exception as exc:
         return jsonify({'success': False, 'error': str(exc)}), 500
 
 
-# -------- RUN --------
+# -------- RUN (dev only, Render uses serve.py) --------
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 7860))
-    print("\n" + "=" * 50)
-    print("DeepFake Defender Backend Running")
-    print("=" * 50)
+    print(f"\n{'='*50}\nDeepFake Defender Backend Running\n{'='*50}")
     print(f"Open http://0.0.0.0:{port} in your browser\n")
     app.run(host="0.0.0.0", debug=False, port=port)
