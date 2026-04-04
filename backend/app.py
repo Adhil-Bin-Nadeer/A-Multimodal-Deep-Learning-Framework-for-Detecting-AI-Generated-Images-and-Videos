@@ -2,9 +2,43 @@ import os
 import sys
 import time
 import uuid
+import threading
+from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 from werkzeug.utils import secure_filename
+
+
+# -------- BACKGROUND MODEL DOWNLOAD --------
+def download_models():
+    try:
+        from huggingface_hub import hf_hub_download
+        repo = "Adhil786/deepfake-models"
+
+        files = [
+            "model_output/synthid/robust_codebook.pkl",
+            "model_output/resnet50_finetuned_benchmark.pth",
+            "ai_detector_meta_learner.joblib",
+            "polynomial_transformer.joblib",
+        ]
+
+        for filepath in files:
+            if not Path(filepath).exists():
+                print(f"Downloading {filepath}...")
+                Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+                hf_hub_download(
+                    repo_id=repo,
+                    filename=filepath,
+                    local_dir=".",
+                )
+                print(f"✅ Downloaded {filepath}")
+            else:
+                print(f"✅ Already exists: {filepath}")
+    except Exception as e:
+        print(f"❌ Model download error: {e}")
+
+# Start download in background — server binds port immediately
+threading.Thread(target=download_models, daemon=True).start()
 
 
 # Add backend to path for imports
@@ -142,10 +176,6 @@ def health_check():
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze_image():
-    """
-    Main analysis endpoint.
-    Pipeline: C2PA Check -> SynthID -> AI Model
-    """
     if 'file' not in request.files:
         return jsonify({'success': False, 'error': 'No file provided'}), 400
 
@@ -175,7 +205,6 @@ def analyze_image():
     }
 
     try:
-        # ========== LAYER 1: C2PA CHECK ==========
         time.sleep(1.5)
         c2pa_result = check_c2pa(filepath)
         result['layers']['c2pa'] = c2pa_result
@@ -202,7 +231,6 @@ def analyze_image():
             time.sleep(0.5)
             result['layers']['ai_model'] = {'status': 'skipped', 'reason': 'C2PA metadata present'}
         else:
-            # ========== LAYER 2: SYNTHID ==========
             time.sleep(1.0)
             synthid_result = analyze_synthid_layer(filepath)
             result['layers']['synthid'] = synthid_result
@@ -223,7 +251,6 @@ def analyze_image():
                     'reason': 'SynthID watermark detected',
                 }
             else:
-                # ========== LAYER 3: AI MODEL ==========
                 time.sleep(2.0)
                 if predictor is not None:
                     model_result = predictor.predict(filepath, return_details=True)
@@ -304,10 +331,6 @@ def analyze_image():
 
 @app.route('/api/analyze_video', methods=['POST'])
 def analyze_video():
-    """
-    Video deepfake detection endpoint.
-    Accepts a video file, runs detection, and returns the result.
-    """
     if 'file' not in request.files:
         return jsonify({'success': False, 'error': 'No file provided'}), 400
     file = request.files['file']
@@ -341,10 +364,6 @@ def analyze_video():
 
 @app.route('/api/forensic-report', methods=['POST'])
 def get_forensic_report():
-    """
-    Generate an enhanced forensic report using Gemini AI.
-    Expects the analysis result JSON in the request body.
-    """
     try:
         analysis_result = request.get_json()
         if not analysis_result:
