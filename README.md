@@ -1,116 +1,139 @@
 ﻿# DeepFake Defender (AI Media Detection Tool)
 
-DeepFake Defender checks images and videos using multiple layers instead of one model.
-This gives more stable results and reduces conflicting output.
+DeepFake Defender is a layered image and video authenticity analyzer.
+It does not rely on one model. It combines provenance checks, watermark checks, deep learning models, and forensic signals.
 
-This README is written for Windows users first, and it explains setup, versions, dependencies, troubleshooting, and safe upgrade steps in detail.
+This README is for new users cloning the project for the first time, especially on Windows where environment and runtime issues are common.
 
-## 1. What This Project Does
+## Table of Contents
 
-For image detection, the backend uses this order:
+1. Project Overview
+2. Detection Policy and Decision Order
+3. Repository Layout
+4. System Requirements
+5. Clone and First-Time Setup
+6. Runtime Assets (Required vs Optional)
+7. Run the Project (Development and Production)
+8. Health Check and Readiness
+9. API Endpoints and Response Contracts
+10. Environment Variables
+11. Windows-Specific Issues and Fixes
+12. Cross-Platform Notes (macOS/Linux)
+13. Result Interpretation Notes
+14. Security and Deployment Notes
+15. Technical Study Reference
+16. License
 
-1. C2PA signed metadata check.
-2. SynthID watermark check.
-3. AI model plus forensic checks (only if needed).
+## 1. Project Overview
 
-Current policy in this project:
+The project has two UI surfaces and one backend:
 
-1. If C2PA metadata is present, the file is treated as AI-generated and lower layers are skipped.
-2. If C2PA is not present but SynthID watermark is detected, AI model layer is skipped.
-3. If both above are not decisive, model plus forensic layer decides.
+1. Flask template UI in `backend/templates` and `backend/static`.
+2. React UI in `frontend` (Vite + React Router).
+3. Flask backend API in `backend/app.py`.
 
-For video detection, the system:
+Main capabilities:
 
-1. Tries dedicated video checkpoints when available.
-2. Falls back to frame-based scoring if dedicated checkpoints are missing.
+1. Image analysis through three-layer cascade:
+- C2PA signed metadata
+- SynthID watermark
+- ResNet + ViT + forensics
+2. Video analysis:
+- Dedicated checkpoint path when video checkpoints exist
+- Fallback frame-based path when checkpoints are missing
 
-## 2. Current UI Surfaces
+## 2. Detection Policy and Decision Order
 
-The repository has two UI options:
+Image decision order is strict and short-circuited:
 
-1. Flask templates in [backend/templates](backend/templates) and static assets in [backend/static](backend/static).
-2. React app in [frontend](frontend) with routes for image and video scan and report flows.
+1. Layer 1 (C2PA): if C2PA metadata is present, final verdict is AI-generated and lower layers are skipped.
+2. Layer 2 (SynthID): if C2PA is absent and calibrated SynthID watermark is detected, final verdict is AI-generated and model layer is skipped.
+3. Layer 3 (AI model + forensics): runs only when Layers 1 and 2 are not decisive.
 
-## 3. Tested Environment and Version Guidance
+Important policy behavior currently in code:
 
-Recommended and tested:
+1. C2PA metadata presence alone triggers AI decision (`AI Generated (C2PA Metadata Present)`) even without explicit AI assertion.
+2. SynthID has calibrated thresholds; weak raw signals do not automatically force AI verdict.
+3. Model layer uses dynamic thresholds that depend on forensic support and disagreement between ResNet and ViT.
 
-1. OS: Windows 10 or 11.
-2. Python: 3.13.3 in a virtual environment.
-3. Node.js: 18 or newer.
-4. npm: 9 or newer.
+## 3. Repository Layout
 
-Supported Python range for practical use:
+Top-level important files and folders:
 
-1. Python 3.10 to 3.13.
+- `backend/app.py`: Flask app, routes, layer orchestration, runtime initialization.
+- `backend/combine_model.py`: image model fusion, threshold logic, guards, confidence computation.
+- `backend/custom_forensics.py`: frequency/anatomy/entropy analyzers and custom score calibration.
+- `backend/forensic.py`: user-facing forensic summary and report generation.
+- `backend/video_detect_standalone.py`: video detection (dedicated and fallback).
+- `backend/src/c2pa_checker.py`: C2PA runtime and manifest parsing.
+- `backend/src/synthid/service.py`: SynthID service wrapper and calibration logic.
+- `scripts/windows`: Windows startup and health-check scripts.
+- `model_output`: model artifacts used at runtime.
+- `frontend/src/pages`: React pages for image and video workflows.
+- `repository_study.tex`: full technical handbook.
 
-Important:
+## 4. System Requirements
 
-1. This repo uses one dependency file: [requirements.txt](requirements.txt).
-2. Do not create a second requirements file unless you fully maintain both.
-3. Always run backend using the virtual environment interpreter path to avoid mixed package environments.
+### Minimum
 
-## 4. Repository Structure (Important Paths)
+1. OS:
+- Windows 10/11 (first-class support in scripts)
+- macOS/Linux (manual commands supported)
+2. Python: 3.10 to 3.13
+3. Node.js: 18+
+4. npm: 9+
+5. RAM: 8 GB recommended
+6. Disk: 3+ GB free (models + dependencies)
 
-1. [backend/app.py](backend/app.py): Main Flask app and API routes.
-2. [backend/serve.py](backend/serve.py): Production entrypoint (Waitress).
-3. [backend/combine_model.py](backend/combine_model.py): Image model fusion and thresholds.
-4. [backend/custom_forensics.py](backend/custom_forensics.py): Frequency, anatomy, and entropy checks.
-5. [backend/forensic.py](backend/forensic.py): Human-readable forensic summaries.
-6. [backend/src/c2pa_checker.py](backend/src/c2pa_checker.py): C2PA runtime and manifest checks.
-7. [backend/video_detect_standalone.py](backend/video_detect_standalone.py): Video path and fallback.
-8. [frontend/src/pages](frontend/src/pages): React pages (image and video flows).
-9. [scripts/windows](scripts/windows): Helper scripts for Windows startup and health checks.
-10. [model_output](model_output): Model artifacts required by runtime.
+### Optional but useful
 
-## 5. Required Runtime Assets
+1. CUDA GPU for faster inference
+2. Git LFS for model artifact retrieval
+3. Stable internet for first startup model downloads (if local artifacts are missing)
 
-Required for image AI path:
+## 5. Clone and First-Time Setup
 
-1. [model_output/resnet50_finetuned_benchmark.pth](model_output/resnet50_finetuned_benchmark.pth)
-2. [ai_detector_meta_learner.joblib](ai_detector_meta_learner.joblib)
-3. [polynomial_transformer.joblib](polynomial_transformer.joblib)
+## 5.1 Clone
 
-Required for SynthID:
+```powershell
+git clone <your-repo-url>
+cd AI-media-detection-tool
+```
 
-1. [model_output/synthid/robust_codebook.pkl](model_output/synthid/robust_codebook.pkl)
+## 5.2 Git LFS (recommended)
 
-Optional for dedicated video path:
+Model artifacts are tracked with LFS patterns (`.gitattributes` includes `*.pth`, `*.pkl`, `*.joblib`).
 
-1. [backend/checkpoints/efficientnet.onnx](backend/checkpoints/efficientnet.onnx)
-2. [backend/checkpoints/model.pth](backend/checkpoints/model.pth)
+```powershell
+git lfs install
+git lfs pull
+```
 
-If optional video checkpoints are missing, video still works with fallback scoring.
+If you skip LFS or artifacts are missing, backend startup also attempts Hugging Face download for key files.
 
-## 6. Full Windows Setup (From Scratch)
+## 5.3 Create and activate Python virtual environment
 
-From repository root:
-
-1. Create virtual environment:
+Windows PowerShell:
 
 ```powershell
 python -m venv .venv
-```
-
-2. Activate virtual environment:
-
-```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 
-3. Upgrade pip tools:
+If script execution is blocked on Windows:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+## 5.4 Install backend dependencies
 
 ```powershell
 python -m pip install --upgrade pip setuptools wheel
-```
-
-4. Install backend dependencies:
-
-```powershell
 python -m pip install -r requirements.txt
 ```
 
-5. Install frontend dependencies:
+## 5.5 Install frontend dependencies
 
 ```powershell
 Set-Location .\frontend
@@ -118,179 +141,339 @@ npm install
 Set-Location ..
 ```
 
-## 7. Run the Project (Windows)
+## 5.6 Verify key runtime files exist
 
-### Option A: Use helper scripts (recommended)
+Expected key files:
 
-Start backend in development mode:
+- `model_output/resnet50_finetuned_benchmark.pth`
+- `ai_detector_meta_learner.joblib`
+- `polynomial_transformer.joblib`
+- `model_output/synthid/robust_codebook.pkl`
+
+If missing, backend may download them from Hugging Face on startup (`Adhil786/deepfake-models`) when internet is available.
+
+## 6. Runtime Assets (Required vs Optional)
+
+| Asset | Path | Required | If Missing |
+|---|---|---|---|
+| ResNet checkpoint | `model_output/resnet50_finetuned_benchmark.pth` | Yes | Image model cannot initialize |
+| Meta learner | `ai_detector_meta_learner.joblib` | No | Meta fusion disabled; baseline blend used |
+| Polynomial transformer | `polynomial_transformer.joblib` | No | Meta fusion disabled; baseline blend used |
+| SynthID codebook | `model_output/synthid/robust_codebook.pkl` | No (for full pipeline yes) | SynthID layer unavailable; pipeline continues to model |
+| ViT weights | Hugging Face (`dima806/ai_vs_real_image_detection`) | No | Uses ResNet + forensics only |
+| Video ONNX checkpoint | `backend/checkpoints/efficientnet.onnx` | No | Video falls back to frame-based path |
+| Video PyTorch checkpoint | `backend/checkpoints/model.pth` | No | Video falls back to frame-based path |
+| MediaPipe task files | `model_output/mediapipe/*.task` or env paths | No | Anatomy forensic module can be unavailable |
+
+## 7. Run the Project
+
+### 7.1 Windows development (recommended)
+
+Start backend:
 
 ```powershell
 Set-Location .\scripts\windows
 .\start-backend-dev.ps1
 ```
 
-Start frontend in another terminal:
+Start frontend in a second terminal:
 
 ```powershell
 Set-Location .\scripts\windows
 .\start-frontend-dev.ps1
 ```
 
-Run backend health check:
+Default ports:
+
+1. Backend: 7860
+2. Frontend (Vite): 3000
+
+Vite proxy in `frontend/vite.config.js` forwards `/api/*` to backend port 7860.
+
+### 7.2 Windows production-style backend
+
+```powershell
+Set-Location .\scripts\windows
+.\start-backend-prod.ps1 -Port 7860 -Threads 8
+```
+
+This runs `backend/serve.py` with Waitress.
+
+### 7.3 Manual run (any platform)
+
+Backend:
+
+```bash
+cd backend
+../.venv/Scripts/python.exe app.py   # Windows
+# or
+../.venv/bin/python app.py           # macOS/Linux
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm run dev
+```
+
+## 8. Health Check and Readiness
+
+Health endpoint:
+
+- `GET /api/health`
+
+Windows helper script:
 
 ```powershell
 Set-Location .\scripts\windows
 .\health-check.ps1
 ```
 
-### Option B: Manual commands
+Verify these fields before scanning:
 
-Backend (development mode):
+1. `python_executable` points to project `.venv`.
+2. `models.ai_predictor_loaded = true`.
+3. `models.synthid_loaded = true` (or understand fallback behavior).
+4. `runtime_initialized = true`.
+
+If `runtime_initialized = false`, image endpoint can return 503 while background model load is still in progress.
+
+## 9. API Endpoints and Response Contracts
+
+## 9.1 `GET /api/health`
+
+Returns runtime state, Python path/version, model readiness, and C2PA runtime status.
+
+## 9.2 `POST /api/analyze`
+
+Input:
+
+- Multipart form-data with file key `file`
+- Allowed image extensions: `png`, `jpg`, `jpeg`, `webp`
+- Max request size: 16 MB
+
+Top-level response keys:
+
+- `success`
+- `filename`
+- `layers` (`c2pa`, `synthid`, `ai_model`)
+- `final_verdict`
+- `confidence`
+- `is_ai_generated`
+- `forensic_summary`
+- `explainability`
+
+Layer status values you may see:
+
+- C2PA: `verified`, `present`, `not_found`, `unavailable`
+- SynthID: `complete`, `skipped`, `unavailable`, `error`
+- AI model: `complete`, `skipped`, `error`
+
+## 9.3 `POST /api/analyze_video`
+
+Input:
+
+- Multipart form-data with file key `file`
+- Allowed extensions: `mp4`, `avi`, `mov`
+
+Returns:
+
+- `label` (`FAKE` or `REAL`)
+- `confidence`
+- `ai_probability`
+- `source`
+- `explainability`
+- `forensic_summary`
+
+## 9.4 `POST /api/forensic-report`
+
+Input:
+
+- JSON analysis result from image flow
+
+Returns:
+
+- `enhanced_report`
+- `summary`
+- `forensic_summary`
+
+## 10. Environment Variables
+
+### App/runtime
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `7860` | Backend port |
+| `HF_TOKEN` | unset | Hugging Face token (if needed for model downloads) |
+
+### Model fusion (`backend/combine_model.py`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ENABLE_TTA` | `1` | Enables mirrored-image TTA scoring |
+| `RESNET_AI_INDEX` | `1` | ResNet class index treated as AI |
+| `SKIP_VIT` | `0` | Skip ViT loading when set to `1` |
+| `VIT_AI_INDEX` | `1` | Fallback ViT AI index if labels cannot be inferred |
+
+### MediaPipe forensic module (`backend/custom_forensics.py`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MEDIAPIPE_POSE_MODEL_PATH` | unset | Path override for `pose_landmarker.task` |
+| `MEDIAPIPE_HAND_MODEL_PATH` | unset | Path override for `hand_landmarker.task` |
+
+### Waitress (`backend/serve.py`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HOST` | `0.0.0.0` | Bind host |
+| `PORT` | `7860` | Bind port |
+| `WAITRESS_THREADS` | `8` | Worker thread count |
+
+### SynthID calibration (`backend/src/synthid/service.py`)
+
+| Variable | Default |
+|---|---|
+| `SYNTHID_MIN_CONFIDENCE` | `0.58` |
+| `SYNTHID_MIN_PHASE_MATCH` | `0.48` |
+| `SYNTHID_MIN_CORRELATION_MARGIN` | `0.0018` |
+| `SYNTHID_MIN_CARRIER_MATCH_RATIO` | `0.30` |
+| `SYNTHID_MIN_SIGNAL_SCORE` | `0.56` |
+| `SYNTHID_MIN_STRUCTURE_RATIO` | `0.78` |
+| `SYNTHID_MAX_STRUCTURE_RATIO` | `1.85` |
+| `SYNTHID_MAX_MULTI_SCALE_STD` | `0.18` |
+
+## 11. Windows-Specific Issues and Fixes
+
+## 11.1 Wrong Python interpreter is running backend
+
+Symptom:
+
+- `/api/health` shows system Python instead of project `.venv`.
+- Features differ from expected (for example C2PA unavailable unexpectedly).
+
+Fix:
+
+1. Stop backend.
+2. Restart with `scripts/windows/start-backend-dev.ps1`.
+3. Re-check `/api/health`.
+
+## 11.2 Port 7860 already in use
+
+Symptom:
+
+- Backend fails to bind or old behavior persists.
+
+Fix:
 
 ```powershell
-Set-Location .\backend
-& "..\.venv\Scripts\python.exe" app.py
+netstat -ano | findstr :7860
+taskkill /PID <PID> /F
 ```
 
-Frontend (development mode):
+Then restart backend.
 
-```powershell
-Set-Location .\frontend
-npm run dev
-```
+## 11.3 Models still initializing (503 from `/api/analyze`)
 
-Vite development proxy is configured to backend port 7860 in [frontend/vite.config.js](frontend/vite.config.js).
+Symptom:
 
-## 8. Production Mode (Local or Server)
+- API returns runtime not initialized.
 
-Use Waitress (not Flask development server):
+Fix:
 
-```powershell
-Set-Location .\scripts\windows
-.\start-backend-prod.ps1
-```
+1. Wait for background load completion.
+2. Check `/api/health` until `runtime_initialized=true`.
 
-Or manual:
+## 11.4 ViT download is slow or blocked
 
-```powershell
-Set-Location .\backend
-& "..\.venv\Scripts\python.exe" serve.py
-```
+Symptom:
 
-Environment variables you can set:
+- Startup delay or ViT load warnings.
 
-1. PORT (default: 7860)
-2. HOST (default: 0.0.0.0)
-3. WAITRESS_THREADS (default: 8)
-4. ENABLE_TTA (default: 1)
-5. RESNET_AI_INDEX (default: 1)
-6. VIT_AI_INDEX (used only as fallback)
+Fix:
 
-## 9. API and Health Endpoints
+- Run with `SKIP_VIT=1` to use ResNet + forensics mode.
 
-Main endpoints:
+## 11.5 Anatomy module unavailable (MediaPipe Tasks API)
 
-1. GET /api/health
-2. POST /api/analyze
-3. POST /api/analyze_video
-4. POST /api/forensic-report
+Symptom:
 
-Health endpoint sample check:
+- Forensic output says anatomy check unavailable.
+- Threshold can become stricter in low-corroboration cases.
 
-```powershell
-Invoke-RestMethod -Uri http://127.0.0.1:7860/api/health
-```
+Fix:
 
-What to verify in health response:
+1. Install/repair `mediapipe`.
+2. Provide task files:
+- `pose_landmarker.task`
+- `hand_landmarker.task`
+3. Place in `model_output/mediapipe/` or set environment variable paths.
 
-1. python_executable should point to your .venv path.
-2. c2pa.available should be true.
-3. c2pa.has_reader should be true.
-4. models.ai_predictor_loaded should be true.
-5. models.synthid_loaded should be true.
+## 11.6 C2PA unavailable
 
-## 10. C2PA Troubleshooting (Most Common Cases)
+Symptom:
 
-Issue: C2PA says unavailable.
+- Health reports C2PA unavailable.
 
-1. Confirm backend was started with virtual environment interpreter path.
-2. Run health endpoint and inspect c2pa fields.
-3. Reinstall package in active virtual environment:
+Fix:
 
 ```powershell
 python -m pip install --upgrade c2pa-python
 ```
 
-Issue: You still see old forensic text after code update.
+Recheck health.
 
-1. Stop stale backend process using port 7860.
-2. Restart backend with virtual environment interpreter.
-3. Start a new scan (report pages use sessionStorage, so old results may still display until a new scan).
+## 11.7 Frontend shows old result
 
-Issue: C2PA returns No C2PA manifest found.
+Symptom:
 
-1. This is not a library failure.
-2. It means the uploaded file has no signed C2PA metadata.
+- Report page appears stale.
 
-## 11. Frontend Troubleshooting
+Reason:
 
-Issue: Video card still says Coming Soon.
+- Result pages rely on `sessionStorage` from latest scan.
 
-1. Make sure you run the updated React build or development server.
-2. Clear browser cache and reload.
-3. Confirm route entries exist in [frontend/src/App.jsx](frontend/src/App.jsx).
+Fix:
 
-Issue: Frontend works but API calls fail.
+- Run a fresh scan from dashboard.
 
-1. Check backend is running on port 7860.
-2. Verify proxy target in [frontend/vite.config.js](frontend/vite.config.js).
-3. Check browser dev tools Network tab for failed /api requests.
+## 12. Cross-Platform Notes (macOS/Linux)
 
-## 12. Dependency Management and Safe Upgrade Process
+The codebase is Windows-first in helper scripts, but backend/frontend work on macOS/Linux with manual commands.
 
-When Python version changes or system is moved:
+Typical flow:
 
-1. Delete old virtual environment folder.
-2. Recreate virtual environment with new Python.
-3. Reinstall dependencies from [requirements.txt](requirements.txt).
-4. Run health check.
-5. Run one image scan and one video scan as smoke tests.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cd frontend && npm install
+```
 
-Suggested smoke tests after upgrades:
+Run backend manually from `backend` and frontend with `npm run dev`.
 
-1. /api/health returns success true.
-2. /api/analyze returns layers and final_verdict.
-3. /api/analyze_video returns label and confidence.
-4. /api/forensic-report returns enhanced_report.
+## 13. Result Interpretation Notes
 
-## 13. Security and Stability Notes
+1. The displayed `confidence` is decision confidence relative to threshold margin, not the raw AI probability.
+2. `ai_probability` can be high while final verdict is real if dynamic threshold is higher (for example low-corroboration guard case).
+3. Forensic summaries include only available modules. Unavailable modules may be omitted from summary text.
 
-1. Keep Flask debug mode off in production.
-2. Use Waitress for production serving.
-3. Keep upload size limits under control.
-4. Do not log sensitive user file paths publicly.
-5. Keep model files outside public static folders.
-6. Use HTTPS when deploying publicly.
+## 14. Security and Deployment Notes
 
-## 14. Performance Notes
+1. Development server (`app.py`) is for local development only.
+2. Use Waitress (`serve.py`) for production-style serving.
+3. Keep uploaded files temporary and private. Backend already deletes temp uploads after processing.
+4. Use HTTPS and standard reverse proxy controls when deploying publicly.
 
-1. First startup is heavier because models are loaded once.
-2. Free hosting can introduce cold starts and slower response.
-3. Keep model files on fast storage.
-4. Avoid running multiple stale backend processes.
+For deployment guidance, see `deployment_document.md`.
 
-## 15. Deployment Guide Reference
+## 15. Technical Study Reference
 
-Detailed free-hosting deployment plans for Windows users are in:
+For deep technical flow, equations, thresholds, API semantics, and architecture details, read:
 
-1. [deployment_document.md](deployment_document.md)
+- `repository_study.tex`
 
-## 16. Technical Study Reference
+## 16. License
 
-Complete technical deep study in LaTeX is in:
-
-1. [repository_study.tex](repository_study.tex)
-
-## 17. License
-
-This project is licensed under MIT. See [LICENSE](LICENSE).
+MIT License. See `LICENSE`.
