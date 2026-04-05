@@ -226,6 +226,175 @@ class AIEnsemblePredictor:
             'fusion_note': fusion_note,
         }
 
+    def _compute_score_consensus(
+        self,
+        res_prob: float,
+        vit_prob: Optional[float],
+        legacy_ai_prob: float,
+    ):
+        if vit_prob is None:
+            ai_consensus = float(np.clip((0.80 * legacy_ai_prob) + (0.20 * res_prob), 0.0, 1.0))
+        else:
+            ai_consensus = float(np.clip(
+                (0.50 * float(vit_prob)) +
+                (0.30 * float(legacy_ai_prob)) +
+                (0.20 * float(res_prob)),
+                0.0,
+                1.0,
+            ))
+
+        real_consensus = float(np.clip(1.0 - ai_consensus, 0.0, 1.0))
+        score_margin = float(ai_consensus - real_consensus)
+        return ai_consensus, real_consensus, score_margin
+
+    def _refine_with_score_consensus(
+        self,
+        res_prob: float,
+        vit_prob: Optional[float],
+        legacy_ai_prob: float,
+        custom_result: dict,
+        final_ai_prob: float,
+    ):
+        ai_consensus, real_consensus, score_margin = self._compute_score_consensus(
+            res_prob=res_prob,
+            vit_prob=vit_prob,
+            legacy_ai_prob=legacy_ai_prob,
+        )
+
+        if vit_prob is None:
+            return final_ai_prob, ai_consensus, real_consensus, score_margin, False
+
+        support_count = len(custom_result.get('supporting_modules', []))
+        negative_modules = list(custom_result.get('negative_modules', []) or [])
+        forensics_only_ai_prob = float(custom_result.get('forensics_only_ai_prob', 0.0))
+        disagreement = abs(float(vit_prob) - float(res_prob))
+
+        refined_ai_prob = float(final_ai_prob)
+        refinement_applied = False
+
+        # In high-disagreement, weak-forensics cases, nudge toward score consensus
+        # to reduce false AI outcomes without inflating weak-evidence AI scores.
+        if support_count == 0 and forensics_only_ai_prob <= 0.25 and disagreement >= 0.45:
+            consensus_target = min(ai_consensus, float(final_ai_prob))
+            refined_ai_prob = float(np.clip((0.82 * final_ai_prob) + (0.18 * consensus_target), 0.0, 1.0))
+
+            if len(negative_modules) >= 1 and ai_consensus > final_ai_prob:
+                weak_support_target = float(np.clip(
+                    (0.70 * float(res_prob)) +
+                    (0.30 * forensics_only_ai_prob),
+                    0.0,
+                    1.0,
+                ))
+                refined_ai_prob = float(np.clip((0.74 * final_ai_prob) + (0.26 * weak_support_target), 0.0, 1.0))
+
+            refinement_applied = abs(refined_ai_prob - final_ai_prob) > 1e-6
+        elif support_count >= 1 and ai_consensus >= 0.75 and final_ai_prob < ai_consensus:
+            refined_ai_prob = float(np.clip((0.88 * final_ai_prob) + (0.12 * ai_consensus), 0.0, 1.0))
+            refinement_applied = abs(refined_ai_prob - final_ai_prob) > 1e-6
+
+        return refined_ai_prob, ai_consensus, real_consensus, score_margin, refinement_applied
+
+    def _apply_vit_disagreement_guard(
+        self,
+        res_prob: float,
+        vit_prob: Optional[float],
+        legacy_ai_prob: float,
+        custom_result: dict,
+        final_ai_prob: float,
+    ):
+        """
+        Guard against strong ResNet/ViT disagreement causing false Real outcomes.
+
+        This only activates when ViT is highly confident for AI and there is
+        at least mild forensic corroboration.
+        """
+        if vit_prob is None:
+            return final_ai_prob, False, ""
+
+        vit_prob = float(vit_prob)
+        res_prob = float(res_prob)
+        if vit_prob < 0.86 or res_prob > 0.22 or (vit_prob - res_prob) < 0.55:
+            return final_ai_prob, False, ""
+
+        forensics_only_ai_prob = float(custom_result.get('forensics_only_ai_prob', 0.0))
+        supporting_modules = set(custom_result.get('supporting_modules', []) or [])
+        negative_modules = list(custom_result.get('negative_modules', []) or [])
+        non_frequency_support = any(module_name != 'frequency' for module_name in supporting_modules)
+
+        frequency_score = float((custom_result.get('frequency') or {}).get('ai_score', 0.0))
+
+        has_forensic_corroboration = (
+            non_frequency_support or
+            forensics_only_ai_prob >= 0.28 or
+            (frequency_score >= 0.48 and vit_prob >= 0.92)
+        )
+
+        if not has_forensic_corroboration:
+            return final_ai_prob, False, ""
+
+        if len(negative_modules) >= 2 and forensics_only_ai_prob <= 0.25:
+            return final_ai_prob, False, ""
+
+        guard_ai_prob = float(np.clip(
+            (0.62 * vit_prob) +
+            (0.23 * legacy_ai_prob) +
+            (0.15 * max(forensics_only_ai_prob, frequency_score)),
+            0.0,
+            1.0,
+        ))
+
+        if guard_ai_prob <= final_ai_prob:
+            return final_ai_prob, False, ""
+
+        return guard_ai_prob, True, 'High-confidence ViT disagreement guard applied.'
+
+    def _apply_real_disagreement_guard(
+        self,
+        res_prob: float,
+        vit_prob: Optional[float],
+        legacy_ai_prob: float,
+        custom_result: dict,
+        final_ai_prob: float,
+    ):
+        """
+        Guard against false AI outcomes when ViT is moderately high but
+        corroborating forensic evidence is weak.
+        """
+        if vit_prob is None:
+            return final_ai_prob, False, ""
+
+        vit_prob = float(vit_prob)
+        res_prob = float(res_prob)
+        if vit_prob < 0.66 or res_prob > 0.18 or (vit_prob - res_prob) < 0.42:
+            return final_ai_prob, False, ""
+
+        forensics_only_ai_prob = float(custom_result.get('forensics_only_ai_prob', 0.0))
+        supporting_modules = set(custom_result.get('supporting_modules', []) or [])
+        negative_modules = list(custom_result.get('negative_modules', []) or [])
+        non_frequency_support = any(module_name != 'frequency' for module_name in supporting_modules)
+
+        frequency_score = float((custom_result.get('frequency') or {}).get('ai_score', 0.0))
+
+        if non_frequency_support or forensics_only_ai_prob >= 0.30:
+            return final_ai_prob, False, ""
+
+        # Keep very strong ViT+artifact evidence untouched.
+        if vit_prob >= 0.90 and frequency_score >= 0.45:
+            return final_ai_prob, False, ""
+
+        if negative_modules and forensics_only_ai_prob <= 0.18:
+            guard_real_prob = float(np.clip(
+                (0.58 * res_prob) +
+                (0.22 * legacy_ai_prob) +
+                (0.20 * forensics_only_ai_prob),
+                0.0,
+                1.0,
+            ))
+            if guard_real_prob < final_ai_prob:
+                return guard_real_prob, True, 'Low-support cross-model disagreement guard applied.'
+
+        return final_ai_prob, False, ""
+
     def _build_artifacts(
         self,
         label: str,
@@ -264,30 +433,90 @@ class AIEnsemblePredictor:
 
         return artifacts
 
-    def _resolve_ai_threshold(self, vit_prob: Optional[float], custom_result: dict, final_ai_prob: float) -> float:
+    def _resolve_ai_threshold(
+        self,
+        res_prob: float,
+        vit_prob: Optional[float],
+        legacy_ai_prob: float,
+        custom_result: dict,
+        final_ai_prob: float,
+    ) -> float:
         support_count = len(custom_result.get('supporting_modules', []))
         negative_count = len(custom_result.get('negative_modules', []))
         forensics_only_ai_prob = float(custom_result.get('forensics_only_ai_prob', 0.0))
+        frequency_score = float((custom_result.get('frequency') or {}).get('ai_score', 0.0))
+        entropy_score = float((custom_result.get('entropy') or {}).get('ai_score', 0.0))
+        anatomy_available = bool((custom_result.get('anatomy') or {}).get('available', False))
 
+        threshold: float
         if support_count >= 2:
-            return 0.54 if vit_prob is not None else 0.57
-        if support_count == 1:
+            threshold = 0.54 if vit_prob is not None else 0.57
+        elif support_count == 1:
             if forensics_only_ai_prob >= 0.55:
-                return 0.58 if vit_prob is not None else 0.62
-            return 0.62 if vit_prob is not None else 0.66
+                threshold = 0.58 if vit_prob is not None else 0.62
+            else:
+                threshold = 0.62 if vit_prob is not None else 0.66
+        else:
+            # No positive forensic support.
+            # Keep thresholds conservative, but avoid forcing nearly-all fallback cases to "Real".
+            if negative_count >= 2 or forensics_only_ai_prob <= 0.12:
+                threshold = 0.76 if vit_prob is not None else 0.80
+            elif negative_count == 1 or forensics_only_ai_prob <= 0.22:
+                threshold = 0.72 if vit_prob is not None else 0.76
+            elif forensics_only_ai_prob <= 0.35:
+                threshold = 0.68 if vit_prob is not None else 0.72
+            elif final_ai_prob >= 0.90:
+                threshold = 0.60 if vit_prob is not None else 0.64
+            else:
+                threshold = 0.64 if vit_prob is not None else 0.68
 
-        # No positive forensic support.
-        # Keep thresholds conservative, but avoid forcing nearly-all fallback cases to "Real".
-        if negative_count >= 2 or forensics_only_ai_prob <= 0.12:
-            return 0.76 if vit_prob is not None else 0.80
-        if negative_count == 1 or forensics_only_ai_prob <= 0.22:
-            return 0.72 if vit_prob is not None else 0.76
-        if forensics_only_ai_prob <= 0.35:
-            return 0.68 if vit_prob is not None else 0.72
+        if vit_prob is not None:
+            disagreement = abs(float(vit_prob) - float(res_prob))
+            if disagreement >= 0.55 and support_count == 0 and forensics_only_ai_prob <= 0.25:
+                threshold = max(threshold, 0.72)
+            elif disagreement >= 0.45 and support_count == 0 and forensics_only_ai_prob <= 0.20:
+                threshold = max(threshold, 0.70)
 
-        if final_ai_prob >= 0.90:
-            return 0.60 if vit_prob is not None else 0.64
-        return 0.64 if vit_prob is not None else 0.68
+            # If anatomy validation is unavailable and corroborating forensic support is weak,
+            # require a materially stronger model score before calling the image AI-generated.
+            low_corroboration_guard_active = (
+                support_count == 0 and
+                not anatomy_available and
+                negative_count >= 1 and
+                forensics_only_ai_prob <= 0.35 and
+                frequency_score < 0.45 and
+                entropy_score <= 0.20
+            )
+
+            if (
+                low_corroboration_guard_active
+            ):
+                threshold = max(threshold, 0.86)
+
+            ai_consensus, _, score_margin = self._compute_score_consensus(
+                res_prob=res_prob,
+                vit_prob=vit_prob,
+                legacy_ai_prob=legacy_ai_prob,
+            )
+
+            if support_count == 0 and forensics_only_ai_prob <= 0.22:
+                if ai_consensus <= 0.40:
+                    threshold = max(threshold, 0.74)
+                elif ai_consensus >= 0.76 and negative_count >= 1:
+                    threshold = max(threshold, 0.74)
+
+            if score_margin >= 0.32 and float(vit_prob) >= 0.85:
+                # Lowering threshold is only safe when there is corroborating forensic support.
+                if low_corroboration_guard_active:
+                    threshold = max(threshold, 0.86)
+                elif support_count >= 1 or forensics_only_ai_prob >= 0.30:
+                    threshold = min(threshold, 0.66)
+                elif support_count == 0 and (negative_count >= 1 or forensics_only_ai_prob <= 0.22):
+                    threshold = max(threshold, 0.74)
+            elif score_margin <= -0.24 and negative_count >= 1:
+                threshold = max(threshold, 0.74)
+
+        return float(threshold)
 
     def _decision_confidence(self, ai_probability: float, ai_threshold: float, is_ai: bool) -> float:
         if is_ai:
@@ -310,6 +539,30 @@ class AIEnsemblePredictor:
             final_ai_prob = max(legacy_ai_prob, custom_ai_prob)
         else:
             final_ai_prob = float((0.70 * legacy_ai_prob) + (0.30 * custom_ai_prob))
+
+        final_ai_prob, _, _ = self._apply_vit_disagreement_guard(
+            res_prob=res_prob,
+            vit_prob=vit_prob,
+            legacy_ai_prob=legacy_ai_prob,
+            custom_result=custom_result,
+            final_ai_prob=final_ai_prob,
+        )
+
+        final_ai_prob, _, _ = self._apply_real_disagreement_guard(
+            res_prob=res_prob,
+            vit_prob=vit_prob,
+            legacy_ai_prob=legacy_ai_prob,
+            custom_result=custom_result,
+            final_ai_prob=final_ai_prob,
+        )
+
+        final_ai_prob, _, _, _, _ = self._refine_with_score_consensus(
+            res_prob=res_prob,
+            vit_prob=vit_prob,
+            legacy_ai_prob=legacy_ai_prob,
+            custom_result=custom_result,
+            final_ai_prob=final_ai_prob,
+        )
 
         return float(max(0.0, min(1.0, final_ai_prob)))
 
@@ -365,12 +618,52 @@ class AIEnsemblePredictor:
             else:
                 final_ai_prob = float((0.70 * legacy_ai_prob) + (0.30 * custom_ai_prob))
                 decision_source = 'Existing ensemble baseline with conservative forensic calibration'
+
+            final_ai_prob, vit_guard_applied, vit_guard_note = self._apply_vit_disagreement_guard(
+                res_prob=res_prob,
+                vit_prob=vit_prob,
+                legacy_ai_prob=legacy_ai_prob,
+                custom_result=custom_result,
+                final_ai_prob=final_ai_prob,
+            )
+            final_ai_prob, real_guard_applied, real_guard_note = self._apply_real_disagreement_guard(
+                res_prob=res_prob,
+                vit_prob=vit_prob,
+                legacy_ai_prob=legacy_ai_prob,
+                custom_result=custom_result,
+                final_ai_prob=final_ai_prob,
+            )
+            final_ai_prob, score_consensus_ai, score_consensus_real, score_margin, score_refinement_applied = self._refine_with_score_consensus(
+                res_prob=res_prob,
+                vit_prob=vit_prob,
+                legacy_ai_prob=legacy_ai_prob,
+                custom_result=custom_result,
+                final_ai_prob=final_ai_prob,
+            )
+            if vit_guard_applied:
+                decision_source = f"{decision_source} + ViT disagreement guard"
+                fusion_info['fusion_note'] = f"{fusion_info.get('fusion_note', 'Model fusion applied.')} {vit_guard_note}"
+            if real_guard_applied:
+                decision_source = f"{decision_source} + real disagreement guard"
+                fusion_info['fusion_note'] = f"{fusion_info.get('fusion_note', 'Model fusion applied.')} {real_guard_note}"
+            if score_refinement_applied:
+                decision_source = f"{decision_source} + score-consensus calibration"
+                fusion_info['fusion_note'] = (
+                    f"{fusion_info.get('fusion_note', 'Model fusion applied.')} "
+                    "Score-consensus calibration adjusted the final probability."
+                )
         except Exception as exc:
             if return_details:
                 return {'status': 'error', 'error': f"Model inference failed: {exc}"}
             return "Error", f"Model inference failed: {exc}"
 
-        ai_threshold = self._resolve_ai_threshold(vit_prob, custom_result, final_ai_prob)
+        ai_threshold = self._resolve_ai_threshold(
+            res_prob=res_prob,
+            vit_prob=vit_prob,
+            legacy_ai_prob=legacy_ai_prob,
+            custom_result=custom_result,
+            final_ai_prob=final_ai_prob,
+        )
         is_ai = final_ai_prob >= ai_threshold
 
         if is_ai:
@@ -401,6 +694,13 @@ class AIEnsemblePredictor:
                     'ai_decision_threshold': ai_threshold * 100.0,
                     'base_blend_ai_score': fusion_info.get('base_blend_ai_score'),
                     'meta_ai_score': fusion_info.get('meta_ai_score'),
+                    'vit_guard_applied': bool(vit_guard_applied),
+                    'real_guard_applied': bool(real_guard_applied),
+                    'score_consensus_ai_score': score_consensus_ai * 100.0,
+                    'score_consensus_real_score': score_consensus_real * 100.0,
+                    'score_consensus_margin': score_margin * 100.0,
+                    'score_refinement_applied': bool(score_refinement_applied),
+                    'resnet_vit_disagreement': None if vit_prob is None else abs(vit_prob - res_prob) * 100.0,
                     'views_checked': views_count,
                 },
                 'forensic_modules': {

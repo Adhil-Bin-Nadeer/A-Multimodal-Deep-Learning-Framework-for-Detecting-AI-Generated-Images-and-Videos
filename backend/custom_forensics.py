@@ -709,6 +709,7 @@ def get_final_custom_score(
         (CUSTOM_WEIGHTS["anatomy"] * float(anatomy.get("ai_score", 0.0))) +
         (CUSTOM_WEIGHTS["entropy"] * float(entropy.get("ai_score", 0.0)))
     )
+
     weighted_ai_prob = _clip01(weighted_ai_prob)
 
     module_map = {
