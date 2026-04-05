@@ -525,6 +525,361 @@ Frontend appears stale & Trigger a fresh scan; report pages read from sessionSto
   \item With checkpoints available, confirm dedicated path and threshold behavior.
 \end{enumerate}
 
+\section{Deep Technical Walkthroughs}
+\subsection{End-to-End Image Workflow (Runtime Order)}
+For every image request to \fpath{/api/analyze}, the control flow in \fpath{backend/app.py} is:
+\begin{enumerate}
+  \item validate multipart upload, extension, and request size,
+  \item ensure predictor runtime is available (or return 503 while loading),
+  \item store file in \fpath{backend/uploads/} with a UUID name,
+  \item run Layer 1 C2PA check,
+  \item if C2PA is present: finalize AI verdict and skip lower layers,
+  \item otherwise run Layer 2 SynthID service,
+  \item if SynthID is calibrated-positive: finalize AI verdict and skip model layer,
+  \item otherwise run Layer 3 model fusion in \fpath{backend/combine_model.py},
+  \item attach human-readable forensic summary from \fpath{backend/forensic.py},
+  \item always delete temporary upload before response.
+\end{enumerate}
+
+\subsection{C2PA Deep Dive (\fpath{backend/src/c2pa_checker.py})}
+\subsubsection{Runtime Capability Detection}
+The module first attempts to import \texttt{c2pa}. It reports capability through:
+\begin{enumerate}
+  \item \texttt{available}: package import success,
+  \item \texttt{has\_reader}: whether \texttt{c2pa.Reader} exists,
+  \item \texttt{has\_c2pa\_error}: whether a library-specific exception class exists,
+  \item \texttt{import\_error}: captured import failure text.
+\end{enumerate}
+
+\subsubsection{Manifest Parsing Procedure}
+When available, \texttt{check\_c2pa(file\_path)} performs:
+\begin{enumerate}
+  \item open file with \texttt{Reader},
+  \item parse manifest JSON/dict payload,
+  \item locate \texttt{active\_manifest},
+  \item evaluate \texttt{validation\_status} (empty list means valid),
+  \item inspect \texttt{assertions} for \texttt{c2pa.actions},
+  \item scan action \texttt{digitalSourceType} for token \texttt{trainedalgorithmicmedia}.
+\end{enumerate}
+
+The app-level policy is intentionally strict: any present C2PA manifest is treated as AI-generated evidence for layer short-circuiting.
+
+\subsection{SynthID Deep Dive (Extractor + Service)}
+SynthID logic is implemented in two layers:
+\begin{enumerate}
+  \item \fpath{backend/src/synthid/robust_extractor.py}: raw watermark evidence extraction,
+  \item \fpath{backend/src/synthid/service.py}: calibrated decision policy and response shaping.
+\end{enumerate}
+
+\subsubsection{Raw Signal Extraction (\fpath{robust_extractor.py})}
+For each input image, the extractor:
+\begin{enumerate}
+  \item resizes to codebook target size,
+  \item extracts fused noise using wavelet, bilateral, non-local means, and Wiener denoisers,
+  \item computes correlation to reference watermark noise,
+  \item computes FFT magnitude/phase carrier evidence from extracted and known frequency carriers,
+  \item computes structure ratio and multi-scale correlation consistency,
+  \item applies gate-based watermark decision logic.
+\end{enumerate}
+
+Gate conditions are:
+\[
+m_{corr} = corr - t, \quad a = \max(0.0025,\;0.35\,\sigma_{corr})
+\]
+\[
+\text{corr\_gate}:\; m_{corr} > 0.85a
+\]
+\[
+\text{phase\_gate}:\; phase\_match > 0.50,
+\quad
+\text{carrier\_gate}:\; carrier\_match\_ratio > 0.28
+\]
+\[
+\text{structure\_gate}:\; 0.75 < structure\_ratio < 1.95,
+\quad
+\text{consistency\_gate}:\; multi\_scale\_std < 0.19
+\]
+
+Raw watermark-positive requires all gates to pass.
+
+Raw confidence is a weighted composition:
+\[
+conf = 0.28s_{corr} + 0.24s_{phase} + 0.18s_{carrier} + 0.12s_{structure} + 0.10s_{consistency} + 0.08s_{scaleMean}
+\]
+then clipped to $[0,1]$.
+
+\subsubsection{Calibrated Decision Layer (\fpath{service.py})}
+Service calibration transforms raw extractor outputs into stable production decisions:
+\begin{enumerate}
+  \item computes \texttt{correlation\_margin} and composite \texttt{signal\_score},
+  \item applies strict threshold set for non-raw hits,
+  \item applies relaxed-but-guarded thresholds if raw extractor already fired,
+  \item emits final \texttt{is\_watermarked} and \texttt{signal\_band} in \{strong, weak, negative\}.
+\end{enumerate}
+
+Composite signal score in service:
+\[
+signal = 0.26c_{confidence}+0.22c_{phase}+0.20c_{corr}+0.16c_{carrier}+0.10c_{structure}+0.06c_{consistency}
+\]
+
+This two-stage design is critical:
+\begin{enumerate}
+  \item stage 1 maximizes sensitivity to watermark structure,
+  \item stage 2 controls false positives through explicit calibration thresholds.
+\end{enumerate}
+
+\subsection{ResNet + ViT + Forensics Deep Dive (\fpath{backend/combine_model.py})}
+\subsubsection{Score Construction}
+Core score symbols:
+\begin{enumerate}
+  \item $p_r$: ResNet AI probability,
+  \item $p_v$: ViT AI probability (optional),
+  \item $p_{legacy}$: legacy model fusion score,
+  \item $p_c$: calibrated custom forensic score,
+  \item $p_f$: forensics-only score,
+  \item $p_{final}$: final image AI probability before threshold compare.
+\end{enumerate}
+
+Legacy fusion:
+\[
+p_{blend}=\frac{p_r+p_v}{2}
+\]
+with optional meta-learner correction (or blended fallback when version drift/high disagreement is detected).
+
+Custom forensic weighted score from \fpath{backend/custom_forensics.py}:
+\[
+p_{weighted}=0.50p_r+0.20p_{freq}+0.20p_{anatomy}+0.10p_{entropy}
+\]
+
+\subsubsection{Forensic Support Classes}
+Each forensic module is categorized as:
+\begin{enumerate}
+  \item supporting if score $\ge 0.60$ or detector flag is positive,
+  \item negative if score $\le 0.15$,
+  \item neutral otherwise.
+\end{enumerate}
+
+Support/negative counts directly influence threshold selection and disagreement guard behavior.
+
+\subsubsection{Disagreement and Consensus Guards}
+After baseline fusion, predictor applies:
+\begin{enumerate}
+  \item high-confidence ViT disagreement guard (raises AI probability only with corroborating forensic context),
+  \item real disagreement guard (reduces false AI outcomes in weak-support contexts),
+  \item score-consensus refinement based on ResNet/ViT/legacy agreement margin.
+\end{enumerate}
+
+Consensus score when ViT exists:
+\[
+p_{consensus}=0.50p_v+0.30p_{legacy}+0.20p_r
+\]
+
+\subsubsection{Dynamic Threshold Resolver}
+Threshold $t$ is not fixed. It depends on:
+\begin{enumerate}
+  \item supporting module count,
+  \item negative module count,
+  \item forensics-only score,
+  \item ViT/ResNet disagreement,
+  \item anatomy availability,
+  \item consensus margin.
+\end{enumerate}
+
+Important safety behavior:
+\begin{enumerate}
+  \item low-corroboration guard forces $t \ge 0.86$ when anatomy is unavailable and forensic corroboration is weak/negative,
+  \item threshold lowering is blocked in that guarded state.
+\end{enumerate}
+
+Final decision rule:
+\[
+\text{AI if } p_{final} \ge t,\; \text{else Real}
+\]
+
+Confidence is threshold-relative margin, not raw AI probability:
+\[
+conf=0.5+0.5\,\mathrm{clip}(m,0,1)
+\]
+
+\subsection{Video Pipeline Deep Dive (\fpath{backend/video_detect_standalone.py})}
+\subsubsection{Branch Selection}
+Video analysis always attempts dedicated checkpoint inference first.
+If checkpoint dependencies or files are missing/failing, execution falls back to frame-level image predictor scoring.
+
+\subsubsection{Dedicated Checkpoint Branch}
+Requires both:
+\begin{enumerate}
+  \item \fpath{backend/checkpoints/efficientnet.onnx},
+  \item \fpath{backend/checkpoints/model.pth}.
+\end{enumerate}
+
+Behavior:
+\begin{enumerate}
+  \item sample 3 frames,
+  \item run converted ONNX/PyTorch model,
+  \item aggregate mean fake probability,
+  \item classify \texttt{FAKE} if $p \ge 0.60$.
+\end{enumerate}
+
+\subsubsection{Frame Fallback Branch}
+Fallback behavior:
+\begin{enumerate}
+  \item sample 6 frames,
+  \item call image predictor probability per frame,
+  \item compute mean and peak probabilities,
+  \item aggregate with weighted blend,
+  \item classify \texttt{FAKE} if final score $\ge 0.65$.
+\end{enumerate}
+
+Aggregation:
+\[
+p_{video}=\mathrm{clip}(0.7\,p_{mean}+0.3\,p_{peak},0,1)
+\]
+
+Frame-level flag threshold for explainability metrics is $0.68$.
+
+\section{File-by-File Codebase Reference}
+\subsection{How to Read This Section}
+Each row explains:
+\begin{enumerate}
+  \item what the file contains,
+  \item where it participates in runtime workflow,
+  \item why it matters operationally.
+\end{enumerate}
+
+\subsection{Root-Level Files}
+\begin{longtable}{p{0.34\textwidth} p{0.24\textwidth} p{0.34\textwidth}}
+\toprule
+\textbf{File} & \textbf{What It Contains} & \textbf{Workflow Role} \\
+\midrule
+\endhead
+\fpath{README.md} & User setup and run guide. & First-stop onboarding and operations reference. \\
+\fpath{repository\_study.tex} & Technical architecture handbook. & Deep internal reference for developers/operators. \\
+\fpath{deployment\_document.md} & Free-hosting deployment playbook. & Release/deploy procedure guidance. \\
+\fpath{requirements.txt} & Backend dependency declarations. & Python runtime reproducibility. \\
+\fpath{.gitignore} & Repository ignore patterns for Python/models/frontend artifacts. & Prevents accidental commits of large/generated/runtime files. \\
+\fpath{.gitattributes} & Git LFS mappings for model artifact extensions. & Ensures large model binaries are handled through LFS workflows. \\
+\fpath{LICENSE} & MIT license text. & Legal distribution/usage permissions. \\
+\fpath{ai\_detector\_meta\_learner.joblib} & Trained sklearn meta-classifier. & Optional score fusion refinement in Layer 3. \\
+\fpath{polynomial\_transformer.joblib} & Polynomial feature transformer for meta model. & Required companion to meta-classifier inference. \\
+\fpath{Photo0065.jpg} & Local sample image asset. & Manual debug/test artifact (not required by runtime). \\
+\bottomrule
+\end{longtable}
+
+\subsection{Backend Core Runtime Files}
+\begin{longtable}{p{0.34\textwidth} p{0.24\textwidth} p{0.34\textwidth}}
+\toprule
+\textbf{File} & \textbf{What It Contains} & \textbf{Workflow Role} \\
+\midrule
+\endhead
+\fpath{backend/app.py} & Flask routes, async initialization, layer orchestration. & Primary API entrypoint for image/video analysis. \\
+\fpath{backend/combine\_model.py} & ResNet+ViT+meta fusion and threshold logic. & Layer 3 final AI probability and verdict engine. \\
+\fpath{backend/custom\_forensics.py} & Frequency/anatomy/entropy forensic analyzers. & Corroboration and calibration inputs for Layer 3. \\
+\fpath{backend/forensic.py} & Forensic summary/report text generation. & Converts raw model outputs into user-facing evidence narratives. \\
+\fpath{backend/video\_detect\_standalone.py} & Dedicated/fallback video detector logic. & Powers \fpath{/api/analyze\_video}. \\
+\fpath{backend/serve.py} & Waitress production launcher. & Production hosting entrypoint. \\
+\fpath{backend/manifests/manifest.json} & Example C2PA manifest payload. & Test/reference structure for C2PA metadata assertions. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Backend Source Package (\fpath{backend/src})}
+\begin{longtable}{p{0.34\textwidth} p{0.24\textwidth} p{0.34\textwidth}}
+\toprule
+\textbf{File} & \textbf{What It Contains} & \textbf{Workflow Role} \\
+\midrule
+\endhead
+\fpath{backend/src/\_\_init\_\_.py} & Package marker/module docstring. & Enables package import structure. \\
+\fpath{backend/src/c2pa\_checker.py} & C2PA runtime checks and manifest parsing. & Layer 1 provenance decision source. \\
+\fpath{backend/src/extraction/synthid\_codebook\_extractor.py} & Offline codebook extraction and detector utility. & SynthID research/training utility, not hot-path API runtime. \\
+\fpath{backend/src/synthid/\_\_init\_\_.py} & SynthID package export. & Re-exports \texttt{SynthIDService} for app import simplicity. \\
+\fpath{backend/src/synthid/robust\_extractor.py} & Multi-stage robust watermark extractor. & Raw SynthID signal computation engine. \\
+\fpath{backend/src/synthid/service.py} & Calibrated SynthID decision service. & Layer 2 decision surface and response schema. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Backend Template/Static Web Files}
+\begin{longtable}{p{0.34\textwidth} p{0.24\textwidth} p{0.34\textwidth}}
+\toprule
+\textbf{File} & \textbf{What It Contains} & \textbf{Workflow Role} \\
+\midrule
+\endhead
+\fpath{backend/static/style.css} & Legacy template UI styling. & Visual theme for server-rendered pages. \\
+\fpath{backend/static/scripts.js} & Legacy image dashboard client logic. & Upload, scan progress, and API integration for template flow. \\
+\fpath{backend/templates/index.html} & Legacy landing page. & Entry to image/video template dashboards. \\
+\fpath{backend/templates/dashboard.html} & Legacy image scanner page. & Template-based image upload workflow. \\
+\fpath{backend/templates/report.html} & Legacy image report page. & Template-based result rendering from sessionStorage. \\
+\fpath{backend/templates/video\_dashboard.html} & Legacy video scanner page. & Template-based video upload workflow. \\
+\fpath{backend/templates/video\_report.html} & Legacy video report page. & Template-based video result rendering. \\
+\fpath{backend/uploads/debug\_real.jpg} & Local debug image sample. & Runtime/debug artifact (not required source). \\
+\fpath{backend/uploads/debug\_test.png} & Local debug image sample. & Runtime/debug artifact (not required source). \\
+\bottomrule
+\end{longtable}
+
+\subsection{Frontend Project Files}
+\begin{longtable}{p{0.34\textwidth} p{0.24\textwidth} p{0.34\textwidth}}
+\toprule
+\textbf{File} & \textbf{What It Contains} & \textbf{Workflow Role} \\
+\midrule
+\endhead
+\fpath{frontend/index.html} & Vite HTML shell with root mount. & Browser entrypoint for React app. \\
+\fpath{frontend/package.json} & Frontend scripts/dependency manifest. & React/Vite build and dev server configuration anchor. \\
+\fpath{frontend/package-lock.json} & NPM lock graph. & Deterministic frontend dependency resolution. \\
+\fpath{frontend/postcss.config.js} & PostCSS plugin setup. & Tailwind/Autoprefixer processing pipeline. \\
+\fpath{frontend/tailwind.config.js} & Tailwind theme/content settings. & Shared utility classes and design tokens. \\
+\fpath{frontend/vite.config.js} & Vite dev server/proxy and build settings. & Routes \fpath{/api} calls to backend during local development. \\
+\fpath{frontend/src/main.jsx} & React root bootstrap + router wrapper. & Starts SPA runtime. \\
+\fpath{frontend/src/App.jsx} & Route definitions. & Maps URL paths to page components. \\
+\fpath{frontend/src/index.css} & Tailwind layers and shared component classes. & Shared styling primitives for all React pages. \\
+\fpath{frontend/src/pages/Home.jsx} & Landing page component. & User path selection (image or video scan). \\
+\fpath{frontend/src/pages/Dashboard.jsx} & Image upload/scan page. & Invokes \fpath{/api/analyze} and writes sessionStorage result. \\
+\fpath{frontend/src/pages/Report.jsx} & Image result page. & Reads image analysis payload and displays layer evidence. \\
+\fpath{frontend/src/pages/VideoDashboard.jsx} & Video upload/scan page. & Invokes \fpath{/api/analyze\_video}. \\
+\fpath{frontend/src/pages/VideoReport.jsx} & Video result page. & Reads video payload and renders confidence/summary. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Frontend Build Output Files (Generated)}
+\begin{longtable}{p{0.34\textwidth} p{0.24\textwidth} p{0.34\textwidth}}
+\toprule
+\textbf{File} & \textbf{What It Contains} & \textbf{Workflow Role} \\
+\midrule
+\endhead
+\fpath{frontend/dist/index.html} & Built HTML entrypoint. & Production static frontend shell after \texttt{npm run build}. \\
+\fpath{frontend/dist/assets/index-BrIvCgAX.js} & Bundled/minified JavaScript payload. & Browser-executed SPA runtime bundle (hash changes per build). \\
+\fpath{frontend/dist/assets/index-DFqUeXBQ.css} & Bundled/minified CSS payload. & Production styles bundle (hash changes per build). \\
+\bottomrule
+\end{longtable}
+
+\subsection{Model Output Files}
+\begin{longtable}{p{0.34\textwidth} p{0.24\textwidth} p{0.34\textwidth}}
+\toprule
+\textbf{File} & \textbf{What It Contains} & \textbf{Workflow Role} \\
+\midrule
+\endhead
+\fpath{model\_output/resnet50\_finetuned\_benchmark.pth} & Primary ResNet classifier weights. & Mandatory Layer 3 model load target. \\
+\fpath{model\_output/resnet50\_final.pth} & Alternate/final ResNet weights artifact. & Training/output artifact, not primary runtime default path. \\
+\fpath{model\_output/training\_summary.txt} & ResNet training run log summary. & Historical training metadata for model provenance. \\
+\fpath{model\_output/synthid/robust\_codebook.pkl} & SynthID robust extractor codebook. & Required for Layer 2 SynthID runtime availability. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Windows Utility Scripts}
+\begin{longtable}{p{0.34\textwidth} p{0.24\textwidth} p{0.34\textwidth}}
+\toprule
+\textbf{File} & \textbf{What It Contains} & \textbf{Workflow Role} \\
+\midrule
+\endhead
+\fpath{scripts/windows/start-backend-dev.ps1} & Dev backend launcher using project \fpath{.venv}. & Standard local development backend startup. \\
+\fpath{scripts/windows/start-backend-prod.ps1} & Waitress backend launcher with thread/port params. & Standard local production-mode backend startup. \\
+\fpath{scripts/windows/start-frontend-dev.ps1} & Frontend dev launcher. & Starts Vite dev server. \\
+\fpath{scripts/windows/health-check.ps1} & API health query helper. & Quick runtime readiness and diagnostics check. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Repository Scope Note}
+The workspace may also contain dependency/vendor trees (for example \fpath{frontend/node\_modules}).
+These are generated third-party packages and are intentionally excluded from per-file authored-code analysis.
+
 \section{Current Notable Updates Reflected in This Version}
 \begin{enumerate}
   \item Health-path diagnostics are emphasized due frequent runtime mismatch on Windows.
@@ -533,6 +888,8 @@ Frontend appears stale & Trigger a fresh scan; report pages read from sessionSto
   \item Low-corroboration threshold guard (0.86) is documented as current behavior.
   \item Video fallback aggregation formula and thresholds are documented.
   \item Frontend sessionStorage hand-off behavior is documented.
+  \item SynthID raw extractor gates and service calibration logic are documented in detail.
+  \item File-by-file authored-code reference has been added for onboarding and maintenance.
 \end{enumerate}
 
 \section{Conclusion}
