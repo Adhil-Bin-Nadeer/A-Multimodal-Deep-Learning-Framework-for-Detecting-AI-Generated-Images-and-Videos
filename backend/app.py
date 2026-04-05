@@ -400,7 +400,7 @@ def analyze_video():
         from video_detect_standalone import deepfakes_video_predict
         from forensic import build_video_forensic_summary
 
-        video_result = deepfakes_video_predict(filepath, predictor=predictor)
+        video_result = deepfakes_video_predict(filepath)
         if isinstance(video_result, dict):
             result = {'success': True, **video_result}
             result['forensic_summary'] = build_video_forensic_summary(result)
