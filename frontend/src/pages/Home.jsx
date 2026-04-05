@@ -8,7 +8,7 @@ export default function Home() {
       {/* Main content */}
       <div className="w-full max-w-4xl text-center animate-fade-in-up">
         <h1 className="gradient-text text-5xl font-extrabold mb-2 tracking-tight">
-          DeepFake Defender
+          AI Generated Image and Video Detector
         </h1>
         <p className="text-slate-400 text-lg tracking-widest mb-12">
           Multi-Layered AI Detection &amp; Forensic Analysis
