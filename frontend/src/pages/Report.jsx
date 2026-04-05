@@ -90,6 +90,8 @@ export default function Report() {
   const synthid = layers?.synthid
   const aiModel = layers?.ai_model
   const forensicSummary = result.forensic_summary
+  const verdictTextRaw = String(final_verdict || '').toLowerCase()
+  const isInconclusive = verdictTextRaw.includes('unknown') || aiModel?.status === 'error'
 
   // ── Layer 1 badge ──────────────────────────────────────────────────────────
   let l1Value = 'Not Found', l1Color = 'gray'
@@ -101,10 +103,16 @@ export default function Report() {
   // ── Layer 2 badge ──────────────────────────────────────────────────────────
   let l2Value = 'N/A', l2Color = 'gray'
   if (synthid?.status === 'complete') {
-    l2Value = synthid.is_watermarked
-      ? `Detected (${synthid.confidence.toFixed(1)}% detector confidence)`
-      : `Not Detected (${synthid.confidence.toFixed(1)}% detector confidence)`
-    l2Color = synthid.is_watermarked ? 'red' : 'green'
+    if (synthid.is_watermarked) {
+      l2Value = `Detected (${synthid.confidence.toFixed(1)}% detector confidence)`
+      l2Color = 'red'
+    } else if (synthid.is_watermarked_raw) {
+      l2Value = `Weak Signal (${synthid.confidence.toFixed(1)}% detector confidence)`
+      l2Color = 'gray'
+    } else {
+      l2Value = `Not Detected (${synthid.confidence.toFixed(1)}% detector confidence)`
+      l2Color = 'green'
+    }
   } else if (synthid?.status === 'skipped') {
     l2Value = 'Skipped'; l2Color = 'gray'
   } else if (synthid?.status === 'unavailable') {
@@ -136,17 +144,21 @@ export default function Report() {
   }
 
   // ── Verdict banner colours ─────────────────────────────────────────────────
-  const verdictBorder = isAI ? 'border-neon-red'   : 'border-neon-green'
-  const verdictBg     = isAI ? 'bg-neon-red/10'    : 'bg-neon-green/10'
-  const verdictText   = isAI ? 'text-neon-red'      : 'text-neon-green'
-  const verdictTitle  = isAI ? 'VERDICT: AI-GENERATED' : 'VERDICT: AUTHENTIC'
+  const verdictBorder = isInconclusive ? 'border-slate-500' : (isAI ? 'border-neon-red' : 'border-neon-green')
+  const verdictBg     = isInconclusive ? 'bg-slate-500/10' : (isAI ? 'bg-neon-red/10' : 'bg-neon-green/10')
+  const verdictText   = isInconclusive ? 'text-slate-300' : (isAI ? 'text-neon-red' : 'text-neon-green')
+  const verdictTitle  = isInconclusive ? 'VERDICT: INCONCLUSIVE' : (isAI ? 'VERDICT: AI-GENERATED' : 'VERDICT: AUTHENTIC')
   const verdictReason = c2pa?.c2pa_present
     ? (c2pa?.ai_generated
       ? 'Source: C2PA signed manifest declaration of AI generation'
       : 'Source: C2PA signed metadata presence policy (treated as AI-generated)')
+    : aiModel?.status === 'error'
+      ? `Source: AI model unavailable (${aiModel?.error || 'runtime not ready'})`
     : synthid?.status === 'complete' && synthid?.is_watermarked
       ? 'Source: SynthID watermark detection'
-      : 'Source: AI detection model ensemble analysis'
+      : aiModel?.status === 'complete'
+        ? 'Source: AI detection model ensemble analysis'
+        : 'Source: Detection pipeline incomplete'
 
   // ── Generate forensic report ───────────────────────────────────────────────
   async function generateReport() {

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 
 def generate_forensic_report(analysis_result: dict) -> dict:
@@ -37,12 +38,12 @@ def _safe_percent(value, default=0.0):
         return float(default)
 
 
-def _image_module_summary(module_name: str, module_data: dict) -> str:
+def _image_module_summary(module_name: str, module_data: dict) -> Optional[str]:
     if not isinstance(module_data, dict):
-        return f"{module_name} check was not available."
+        return None
 
     if module_data.get('available') is False:
-        return f"{module_name} check was unavailable."
+        return None
 
     detected = bool(module_data.get('detected'))
     score = _safe_percent(module_data.get('ai_score', 0.0)) * 100.0
@@ -62,7 +63,7 @@ def _image_module_summary(module_name: str, module_data: dict) -> str:
             return f"Local entropy analysis found uneven texture/detail distribution between regions ({score:.1f}% anomaly strength)."
         return f"Local entropy analysis looked consistent with natural scene detail ({score:.1f}% anomaly strength)."
 
-    return f"{module_name} check completed."
+    return None
 
 
 def build_image_forensic_summary(analysis_result: dict) -> dict:
@@ -109,26 +110,41 @@ def build_image_forensic_summary(analysis_result: dict) -> dict:
         label = ai_model.get('label', 'Unknown')
         model_confidence = _safe_percent(ai_model.get('confidence', 0.0))
         if pipeline_override.get('applied'):
-            points.append(
-                "The AI image model produced a low-confidence AI result, but the pipeline overrode it to real "
-                "because SynthID was negative and forensic support was weak."
-            )
+            override_reason = pipeline_override.get('reason')
+            if override_reason:
+                points.append(f"A pipeline override was applied: {override_reason}.")
+            else:
+                points.append(
+                    "The AI image model produced a low-confidence AI result, but the pipeline overrode it to real "
+                    "because SynthID was negative and forensic support was weak."
+                )
         else:
             points.append(f"The AI image model classified the file as {label} with {model_confidence:.1f}% confidence.")
+
+        evidence_conflict = ai_model.get('evidence_conflict', {}) if isinstance(ai_model, dict) else {}
+        if evidence_conflict.get('synthid_positive'):
+            points.append(
+                "SynthID reported a watermark-like signal, but the ensemble model judged the image as real; "
+                "the final verdict followed the model to avoid watermark-only false positives."
+            )
 
         frequency = forensic_modules.get('frequency', {})
         anatomy = forensic_modules.get('anatomy', {})
         entropy = forensic_modules.get('entropy', {})
-        module_points = [
-            _image_module_summary("Frequency", frequency),
-            _image_module_summary("Anatomy", anatomy),
-            _image_module_summary("Entropy", entropy),
-        ]
+        module_points = []
+        for module_name, module_data in (
+            ("Frequency", frequency),
+            ("Anatomy", anatomy),
+            ("Entropy", entropy),
+        ):
+            module_summary = _image_module_summary(module_name, module_data)
+            if module_summary:
+                module_points.append(module_summary)
         points.extend(module_points)
     elif ai_model.get('status') == 'skipped':
         points.append("The AI image model was skipped because earlier evidence already supported the decision.")
     else:
-        points.append("The AI image model was not available for this file.")
+        points.append("The AI image model could not complete for this file.")
 
     conclusion = (
         f"The final decision is {verdict}."
@@ -237,13 +253,16 @@ def _get_detection_method(layers: dict) -> str:
             return "C2PA Manifest AI Declaration"
         return "C2PA Metadata Presence Policy"
 
+    ai_model = layers.get('ai_model', {})
+    if ai_model.get('status') == 'complete':
+        synthid = layers.get('synthid', {})
+        if synthid.get('status') == 'complete' and synthid.get('is_watermarked') and ai_model.get('label') == 'AI Image':
+            return "AI Detection Model + SynthID Corroboration"
+        return "AI Detection Model (ResNet + ViT Ensemble)"
+
     synthid = layers.get('synthid', {})
     if synthid.get('status') == 'complete' and synthid.get('is_watermarked'):
         return "SynthID Watermark Detection"
-    
-    ai_model = layers.get('ai_model', {})
-    if ai_model.get('status') == 'complete':
-        return "AI Detection Model (ResNet + ViT Ensemble)"
 
     return "Unknown"
 

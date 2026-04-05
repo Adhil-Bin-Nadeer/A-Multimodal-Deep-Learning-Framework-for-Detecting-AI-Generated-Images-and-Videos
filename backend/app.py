@@ -28,15 +28,75 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # -------- GLOBAL MODEL STATE --------
 predictor = None
+predictor_import_error = None
 synthid_detector = None
 synthid_import_error = None
 _models_ready = False
 _models_loading = False
+_runtime_lock = threading.Lock()
 
 
 # -------- BACKGROUND INIT (download + load, runs after port binds) --------
+def _load_predictor() -> bool:
+    global predictor, predictor_import_error
+    try:
+        from combine_model import AIEnsemblePredictor
+        predictor = AIEnsemblePredictor()
+        predictor_import_error = None
+        print("==> ✅ AI predictor loaded.")
+        return True
+    except Exception as exc:
+        predictor = None
+        predictor_import_error = str(exc)
+        print(f"==> ❌ AI predictor failed: {exc}")
+        return False
+
+
+def _load_synthid() -> bool:
+    global synthid_detector, synthid_import_error
+    try:
+        from src.synthid import SynthIDService
+        synthid_detector = SynthIDService(
+            codebook_path=os.path.join(project_root, 'model_output', 'synthid', 'robust_codebook.pkl')
+        )
+        if synthid_detector.available:
+            synthid_import_error = None
+            print("==> ✅ SynthID detector loaded.")
+            return True
+
+        synthid_import_error = synthid_detector.error or "SynthID detector unavailable"
+        print(f"==> ⚠️ SynthID unavailable: {synthid_import_error}")
+        return False
+    except Exception as exc:
+        synthid_detector = None
+        synthid_import_error = str(exc)
+        print(f"==> ❌ SynthID import failed: {exc}")
+        return False
+
+
+def _recover_runtime_if_needed(force: bool = False) -> None:
+    global _models_loading, _models_ready
+
+    if _models_loading and not force:
+        return
+
+    with _runtime_lock:
+        if _models_loading and not force:
+            return
+
+        _models_loading = True
+        try:
+            if predictor is None:
+                _load_predictor()
+
+            if synthid_detector is None or not bool(getattr(synthid_detector, 'available', False)):
+                _load_synthid()
+        finally:
+            _models_loading = False
+            _models_ready = predictor is not None and bool(synthid_detector is not None)
+
+
 def initialize_all():
-    global predictor, synthid_detector, synthid_import_error
     global _models_ready, _models_loading
 
     _models_loading = True
@@ -72,30 +132,13 @@ def initialize_all():
     except Exception as e:
         print(f"==> ❌ Download error: {e}")
 
-    # Step 2: Load AI predictor
-    try:
-        from combine_model import AIEnsemblePredictor
-        predictor = AIEnsemblePredictor()
-        print("==> ✅ AI predictor loaded.")
-    except Exception as e:
-        print(f"==> ❌ AI predictor failed: {e}")
-
-    # Step 3: Load SynthID
-    try:
-        from src.synthid import SynthIDService
-        synthid_detector = SynthIDService(
-            codebook_path=os.path.join(project_root, 'model_output', 'synthid', 'robust_codebook.pkl')
-        )
-        if synthid_detector.available:
-            print("==> ✅ SynthID detector loaded.")
-        else:
-            print(f"==> ⚠️ SynthID unavailable: {synthid_detector.error}")
-    except Exception as e:
-        synthid_import_error = str(e)
-        print(f"==> ❌ SynthID import failed: {e}")
+    # Step 2 + 3: Load runtime models
+    with _runtime_lock:
+        _load_predictor()
+        _load_synthid()
 
     _models_loading = False
-    _models_ready = True
+    _models_ready = predictor is not None and bool(synthid_detector is not None)
     print("==> ✅ All models ready.")
 
 
@@ -114,13 +157,24 @@ def _build_temp_upload_path(original_filename: str) -> str:
     return os.path.join(app.config['UPLOAD_FOLDER'], f"{uuid.uuid4().hex}{ext.lower()}")
 
 
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def analyze_synthid_layer(image_path):
-    if synthid_detector is None:
+    if synthid_detector is None or not bool(getattr(synthid_detector, 'available', False)):
+        if not _models_loading:
+            _recover_runtime_if_needed()
+
+    if synthid_detector is None or not bool(getattr(synthid_detector, 'available', False)):
         return {
             'status': 'unavailable',
             'available': False,
-            'message': 'SynthID detector not yet loaded' if _models_loading else 'SynthID detector import failed',
-            'error': synthid_import_error or 'SynthID not available',
+            'message': 'SynthID detector not yet loaded' if _models_loading else 'SynthID detector unavailable',
+            'error': synthid_import_error or getattr(synthid_detector, 'error', None) or 'SynthID not available',
         }
     return synthid_detector.analyze(image_path)
 
@@ -170,11 +224,11 @@ def health_check():
             'ai_predictor_loaded': predictor is not None,
             'ai_predictor_initialized': predictor is not None,
             'ai_predictor_init_in_progress': _models_loading,
-            'ai_predictor_error': None,
+            'ai_predictor_error': predictor_import_error,
             'synthid_loaded': synthid_detector is not None and bool(getattr(synthid_detector, 'available', False)),
             'synthid_initialized': synthid_detector is not None,
             'synthid_init_in_progress': _models_loading,
-            'synthid_error': synthid_import_error,
+            'synthid_error': synthid_import_error or getattr(synthid_detector, 'error', None),
         },
         'c2pa': c2pa_status,
     })
@@ -191,6 +245,23 @@ def analyze_image():
 
     if not allowed_file(file.filename):
         return jsonify({'success': False, 'error': 'File type not allowed'}), 400
+
+    if predictor is None:
+        if _models_loading:
+            return jsonify({
+                'success': False,
+                'error': 'Detection models are still initializing. Please wait a few seconds and retry.',
+                'runtime_initialized': False,
+            }), 503
+
+        _recover_runtime_if_needed()
+        if predictor is None:
+            return jsonify({
+                'success': False,
+                'error': 'AI model failed to initialize. Please check runtime health and dependencies.',
+                'runtime_initialized': False,
+                'details': {'ai_predictor_error': predictor_import_error},
+            }), 503
 
     filename = secure_filename(file.filename)
     filepath = _build_temp_upload_path(filename)
@@ -240,11 +311,13 @@ def analyze_image():
             result['layers']['synthid'] = synthid_result
             synthid_detected = (
                 synthid_result.get('status') == 'complete' and
-                synthid_result.get('is_watermarked')
+                bool(synthid_result.get('is_watermarked'))
             )
 
+            # Strict layer cascade policy:
+            # if a current layer detects AI evidence, finalize and skip lower layers.
             if synthid_detected:
-                result['confidence'] = max(result['confidence'], synthid_result.get('confidence', 0.0))
+                result['confidence'] = max(result['confidence'], _safe_float(synthid_result.get('confidence', 0.0)))
                 result['is_ai_generated'] = True
                 result['final_verdict'] = 'AI Generated (SynthID Watermark Detected)'
                 result['layers']['ai_model'] = {'status': 'skipped', 'reason': 'SynthID watermark detected'}
@@ -261,6 +334,7 @@ def analyze_image():
                             'source': model_result.get('source'),
                             'model_scores': model_result.get('model_scores', {}),
                             'forensic_modules': model_result.get('forensic_modules', {}),
+                            'pipeline_override': {'applied': False},
                         }
                         result['explainability'] = {'artifacts': model_result.get('artifacts', [])}
                     else:
@@ -271,40 +345,20 @@ def analyze_image():
                 else:
                     result['layers']['ai_model'] = {
                         'status': 'error',
-                        'error': 'AI model still loading, please try again shortly.' if _models_loading else 'AI model not loaded',
+                        'error': (
+                            'AI model still loading, please try again shortly.'
+                            if _models_loading
+                            else (predictor_import_error or 'AI model not loaded')
+                        ),
                     }
 
                 ai_model_result = result['layers']['ai_model']
                 if ai_model_result.get('status') == 'complete':
                     model_label = ai_model_result.get('label')
-                    model_confidence = float(ai_model_result.get('confidence', 0.0))
-                    model_scores = ai_model_result.get('model_scores', {}) or {}
-                    forensic_modules = ai_model_result.get('forensic_modules', {}) or {}
-                    supporting_modules = forensic_modules.get('supporting_modules', []) or []
-                    forensics_only_score = float(model_scores.get('forensics_only_ai_score', 0.0))
-
-                    low_confidence_override = (
-                        model_label == 'AI Image' and
-                        model_confidence < 60.0 and
-                        not supporting_modules and
-                        forensics_only_score < 45.0 and
-                        synthid_result.get('status') == 'complete' and
-                        not synthid_result.get('is_watermarked')
-                    )
-
-                    if low_confidence_override:
-                        ai_model_result['pipeline_override'] = {
-                            'applied': True,
-                            'reason': 'Low-confidence model-only AI prediction with negative SynthID and weak forensic support',
-                        }
-                        result['confidence'] = max(50.0, min(75.0, 100.0 - forensics_only_score))
-                        result['is_ai_generated'] = False
-                        result['final_verdict'] = 'Real Image'
-                    else:
-                        ai_model_result['pipeline_override'] = {'applied': False}
-                        result['confidence'] = model_confidence
-                        result['is_ai_generated'] = model_label == 'AI Image'
-                        result['final_verdict'] = model_label or 'Unknown'
+                    model_confidence = _safe_float(ai_model_result.get('confidence', 0.0))
+                    result['confidence'] = model_confidence
+                    result['is_ai_generated'] = model_label == 'AI Image'
+                    result['final_verdict'] = model_label or 'Unknown'
                 elif c2pa_result.get('c2pa_present'):
                     result['final_verdict'] = 'Unknown (Signed provenance present)'
                 else:

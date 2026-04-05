@@ -270,25 +270,24 @@ class AIEnsemblePredictor:
         forensics_only_ai_prob = float(custom_result.get('forensics_only_ai_prob', 0.0))
 
         if support_count >= 2:
-            return 0.55 if vit_prob is not None else 0.58
+            return 0.54 if vit_prob is not None else 0.57
         if support_count == 1:
-            return 0.60 if vit_prob is not None else 0.64
+            if forensics_only_ai_prob >= 0.55:
+                return 0.58 if vit_prob is not None else 0.62
+            return 0.62 if vit_prob is not None else 0.66
 
-        # No forensic support: require very high model certainty.
-        if support_count == 0 and forensics_only_ai_prob <= 0.35:
-            return 0.88 if vit_prob is not None else 0.90
-
-        # If forensic evidence is weak/negative, require stronger model certainty.
-        if negative_count >= 2 or forensics_only_ai_prob <= 0.15:
-            return 0.84 if vit_prob is not None else 0.86
-        if negative_count == 1 or forensics_only_ai_prob <= 0.25:
-            return 0.82 if vit_prob is not None else 0.85
+        # No positive forensic support.
+        # Keep thresholds conservative, but avoid forcing nearly-all fallback cases to "Real".
+        if negative_count >= 2 or forensics_only_ai_prob <= 0.12:
+            return 0.76 if vit_prob is not None else 0.80
+        if negative_count == 1 or forensics_only_ai_prob <= 0.22:
+            return 0.72 if vit_prob is not None else 0.76
         if forensics_only_ai_prob <= 0.35:
-            return 0.78 if vit_prob is not None else 0.82
+            return 0.68 if vit_prob is not None else 0.72
 
         if final_ai_prob >= 0.90:
-            return 0.62 if vit_prob is not None else 0.66
-        return 0.72 if vit_prob is not None else 0.75
+            return 0.60 if vit_prob is not None else 0.64
+        return 0.64 if vit_prob is not None else 0.68
 
     def _decision_confidence(self, ai_probability: float, ai_threshold: float, is_ai: bool) -> float:
         if is_ai:

@@ -74,8 +74,24 @@ document.addEventListener('DOMContentLoaded', function() {
         log(`File selected: ${file.name}`);
     }
 
-    function startScan() {
+    async function startScan() {
         if (!selectedFile) return;
+
+        try {
+            const healthResponse = await fetch('/api/health');
+            if (healthResponse.ok) {
+                const health = await healthResponse.json();
+                const aiReady = Boolean(health?.models?.ai_predictor_loaded);
+                if (!aiReady) {
+                    log('⚠️ Detection models are still initializing. Please retry in a few seconds.');
+                    fileInfo.textContent = 'Models are loading. Try again shortly.';
+                    return;
+                }
+            }
+        } catch {
+            log('⚠️ Could not verify backend model status. Proceeding with scan...');
+        }
+
         scanBtn.disabled = true;
         scanBtn.textContent = 'Scanning...';
         processFile(selectedFile);
@@ -177,6 +193,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (synthid.is_watermarked) {
                     updateStep('step2', 'flagged');
                     log(`[LAYER 2] Watermark detected (${synthid.confidence.toFixed(1)}% confidence)`);
+                } else if (synthid.is_watermarked_raw) {
+                    updateStep('step2', 'complete');
+                    log(`[LAYER 2] Weak watermark-like signal found (${synthid.confidence.toFixed(1)}% detector confidence), but below calibrated threshold`);
                 } else {
                     updateStep('step2', 'complete');
                     log(`[LAYER 2] No watermark detected (${synthid.confidence.toFixed(1)}% confidence)`);

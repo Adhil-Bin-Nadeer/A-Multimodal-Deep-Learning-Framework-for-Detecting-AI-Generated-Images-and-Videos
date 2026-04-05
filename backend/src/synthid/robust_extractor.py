@@ -628,6 +628,18 @@ class RobustSynthIDExtractor:
         """Detect SynthID watermark in a numpy array image."""
         if self.codebook is None:
             raise ValueError("No codebook loaded. Call extract_codebook() or load_codebook() first.")
+
+        def _safe_float(value: float, default: float = 0.0) -> float:
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return float(default)
+            if not np.isfinite(value):
+                return float(default)
+            return value
+
+        def _clip01(value: float) -> float:
+            return float(max(0.0, min(1.0, value)))
         
         target_size = self.codebook['image_size']
         img_resized = cv2.resize(image, (target_size, target_size))
@@ -637,7 +649,7 @@ class RobustSynthIDExtractor:
         
         # Method 1: Correlation with reference noise
         ref_noise = self.codebook['reference_noise']
-        correlation = float(np.corrcoef(noise.ravel(), ref_noise.ravel())[0, 1])
+        correlation = _safe_float(np.corrcoef(noise.ravel(), ref_noise.ravel())[0, 1])
         
         # Method 2: Carrier frequency analysis using known carriers + extracted carriers
         gray = np.mean(img_resized, axis=2) if len(img_resized.shape) == 3 else img_resized
@@ -648,14 +660,38 @@ class RobustSynthIDExtractor:
         
         center = target_size // 2
         carrier_scores = []
+        carrier_score_weights = []
         carrier_strengths = []
+        carrier_match_hits = 0
         
         # Use extracted carriers if available, otherwise use known carriers
-        carriers_to_check = self.codebook['carriers'][:30] if self.codebook['carriers'] else []
-        
-        # Always also check known carriers for reliability
-        known_carrier_dicts = [{'frequency': freq, 'phase': 0} for freq in self.codebook.get('known_carriers', self.known_carriers)]
-        carriers_to_check = carriers_to_check + known_carrier_dicts
+        carriers_to_check = []
+        seen_freqs = set()
+
+        for carrier in (self.codebook.get('carriers') or [])[:30]:
+            freq = tuple(carrier.get('frequency', ())) if isinstance(carrier, dict) else ()
+            if len(freq) != 2 or freq in seen_freqs:
+                continue
+            seen_freqs.add(freq)
+            carriers_to_check.append({
+                'frequency': freq,
+                'phase': carrier.get('phase', 0.0),
+                'weight': 1.15,
+                'source': 'extracted',
+            })
+
+        # Known carriers are used as backup references, but weighted lower.
+        for freq in self.codebook.get('known_carriers', self.known_carriers):
+            freq = tuple(freq)
+            if len(freq) != 2 or freq in seen_freqs:
+                continue
+            seen_freqs.add(freq)
+            carriers_to_check.append({
+                'frequency': freq,
+                'phase': 0.0,
+                'weight': 0.85,
+                'source': 'known',
+            })
         
         # Use reference phase from codebook if available
         ref_phase = self.codebook.get('reference_phase')
@@ -677,17 +713,27 @@ class RobustSynthIDExtractor:
                 # Phase match (accounting for wrap-around)
                 phase_diff = np.abs(np.angle(np.exp(1j * (actual_phase - expected_phase))))
                 phase_match = 1 - phase_diff / np.pi
-                carrier_scores.append(phase_match)
+                weight = _safe_float(carrier.get('weight', 1.0), 1.0)
+                carrier_scores.append(_safe_float(phase_match))
+                carrier_score_weights.append(weight)
+
+                if phase_match >= 0.62:
+                    carrier_match_hits += 1
                 
                 # Carrier strength
-                carrier_strengths.append(magnitude[y, x])
+                carrier_strengths.append(_safe_float(magnitude[y, x]))
         
-        avg_phase_match = float(np.mean(carrier_scores)) if carrier_scores else 0
-        avg_carrier_strength = float(np.mean(carrier_strengths)) if carrier_strengths else 0
+        if carrier_scores:
+            avg_phase_match = float(np.average(np.array(carrier_scores, dtype=np.float32), weights=np.array(carrier_score_weights, dtype=np.float32)))
+        else:
+            avg_phase_match = 0.0
+
+        avg_carrier_strength = float(np.mean(carrier_strengths)) if carrier_strengths else 0.0
+        carrier_match_ratio = float(carrier_match_hits / max(len(carrier_scores), 1))
         
         # Method 3: Noise structure ratio
         noise_gray = np.mean(noise, axis=2) if len(noise.shape) == 3 else noise
-        structure_ratio = float(np.std(noise_gray) / (np.mean(np.abs(noise_gray)) + 1e-10))
+        structure_ratio = _safe_float(np.std(noise_gray) / (np.mean(np.abs(noise_gray)) + 1e-10))
         
         # Method 4: Multi-scale consistency
         scale_scores = []
@@ -696,31 +742,52 @@ class RobustSynthIDExtractor:
             noise_scaled = self.extract_noise_single(img_scaled, 'wavelet')
             ref_scaled = cv2.resize(ref_noise, (scale, scale))
             
-            corr = np.corrcoef(noise_scaled.ravel(), ref_scaled.ravel())[0, 1]
-            scale_scores.append(corr)
+            corr = _safe_float(np.corrcoef(noise_scaled.ravel(), ref_scaled.ravel())[0, 1], float('nan'))
+            if np.isfinite(corr):
+                scale_scores.append(float(corr))
         
-        multi_scale_consistency = float(np.std(scale_scores))  # Lower is more consistent
+        multi_scale_consistency = float(np.std(scale_scores)) if scale_scores else 1.0  # Lower is more consistent
+        multi_scale_mean = float(np.mean(scale_scores)) if scale_scores else 0.0
         
         # Detection decision
-        threshold = self.codebook['detection_threshold']
+        threshold = _safe_float(self.codebook.get('detection_threshold', 0.0))
+        corr_std = _safe_float(self.codebook.get('correlation_std', 0.01), 0.01)
+        adaptive_margin = max(0.0025, 0.35 * corr_std)
+        corr_margin = correlation - threshold
+
+        corr_gate = corr_margin > (0.85 * adaptive_margin)
+        phase_gate = avg_phase_match > 0.50
+        carrier_gate = carrier_match_ratio > 0.28
+        structure_gate = 0.75 < structure_ratio < 1.95
+        consistency_gate = multi_scale_consistency < 0.19
+
         is_watermarked = (
-            correlation > threshold and
-            avg_phase_match > 0.45 and
-            0.7 < structure_ratio < 2.0
+            corr_gate and
+            phase_gate and
+            carrier_gate and
+            structure_gate and
+            consistency_gate
         )
         
-        # Confidence score (Bayesian combination)
-        corr_score = max(0, (correlation - threshold) / (self.codebook['correlation_mean'] - threshold + 1e-10))
-        phase_score = avg_phase_match
-        structure_score = max(0, 1 - abs(structure_ratio - 1.32) / 0.6)
-        consistency_score = max(0, 1 - multi_scale_consistency * 5)
+        # Confidence score (quality-aware calibration)
+        corr_score = _clip01((corr_margin + adaptive_margin) / (3.0 * adaptive_margin + 1e-10))
+        phase_score = _clip01((avg_phase_match - 0.45) / 0.30)
+        carrier_score = _clip01((carrier_match_ratio - 0.22) / 0.45)
+        structure_score = _clip01(1.0 - abs(structure_ratio - 1.32) / 0.75)
+        consistency_score = _clip01(1.0 - (multi_scale_consistency / 0.20))
+        scale_mean_score = _clip01((multi_scale_mean - threshold + adaptive_margin) / (3.0 * adaptive_margin + 1e-10))
         
-        confidence = min(1.0, (
-            0.35 * corr_score +
-            0.35 * phase_score +
-            0.15 * structure_score +
-            0.15 * consistency_score
-        ))
+        confidence = _clip01(
+            (0.28 * corr_score) +
+            (0.24 * phase_score) +
+            (0.18 * carrier_score) +
+            (0.12 * structure_score) +
+            (0.10 * consistency_score) +
+            (0.08 * scale_mean_score)
+        )
+
+        if is_watermarked:
+            confidence = max(confidence, 0.62)
         
         return DetectionResult(
             is_watermarked=bool(is_watermarked),
@@ -732,11 +799,26 @@ class RobustSynthIDExtractor:
             multi_scale_consistency=multi_scale_consistency,
             details={
                 'threshold': threshold,
+                'adaptive_margin': adaptive_margin,
+                'correlation_margin': corr_margin,
                 'corr_score': corr_score,
                 'phase_score': phase_score,
+                'carrier_score': carrier_score,
                 'structure_score': structure_score,
                 'consistency_score': consistency_score,
-                'scale_correlations': scale_scores
+                'scale_mean_score': scale_mean_score,
+                'carrier_match_ratio': carrier_match_ratio,
+                'carrier_match_hits': carrier_match_hits,
+                'carrier_total': len(carrier_scores),
+                'scale_mean': multi_scale_mean,
+                'gates': {
+                    'corr_gate': corr_gate,
+                    'phase_gate': phase_gate,
+                    'carrier_gate': carrier_gate,
+                    'structure_gate': structure_gate,
+                    'consistency_gate': consistency_gate,
+                },
+                'scale_correlations': scale_scores,
             }
         )
 

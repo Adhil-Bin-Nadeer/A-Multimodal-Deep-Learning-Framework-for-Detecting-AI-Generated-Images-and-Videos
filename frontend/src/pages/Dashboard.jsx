@@ -79,6 +79,22 @@ export default function Dashboard() {
   // ── scan ─────────────────────────────────────────────────
   async function startScan() {
     if (!selectedFile || scanning) return
+
+    try {
+      const healthResponse = await fetch('/api/health')
+      if (healthResponse.ok) {
+        const health = await healthResponse.json()
+        const aiReady = Boolean(health?.models?.ai_predictor_loaded)
+        if (!aiReady) {
+          appendLog('⚠️ Detection models are still initializing. Please retry in a few seconds.')
+          setFileInfo('Models are loading. Try again shortly.')
+          return
+        }
+      }
+    } catch {
+      appendLog('⚠️ Could not verify backend model status. Proceeding with scan...')
+    }
+
     setScanning(true)
     setUploadLabel(`Analyzing: ${selectedFile.name}...`)
     setFileInfo('Processing...')
@@ -134,6 +150,9 @@ export default function Dashboard() {
         if (synthid.is_watermarked) {
           appendLog(`[LAYER 2] Watermark detected (${synthid.confidence.toFixed(1)}% confidence)`)
           setStep('step2', 'flagged')
+        } else if (synthid.is_watermarked_raw) {
+          appendLog(`[LAYER 2] Weak watermark-like signal found (${synthid.confidence.toFixed(1)}% detector confidence), but below calibrated threshold`)
+          setStep('step2', 'complete')
         } else {
           appendLog(`[LAYER 2] No watermark detected (${synthid.confidence.toFixed(1)}% confidence)`)
           setStep('step2', 'complete')

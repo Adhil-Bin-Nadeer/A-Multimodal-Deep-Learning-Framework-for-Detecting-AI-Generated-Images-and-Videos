@@ -95,10 +95,18 @@
             detectionMethod.textContent = result.layers?.c2pa?.ai_generated
                 ? 'C2PA'
                 : 'C2PA Metadata Presence Policy';
+        } else if (result.layers?.ai_model?.status === 'complete') {
+            if (
+                result.layers?.synthid?.status === 'complete' &&
+                result.layers?.synthid?.is_watermarked &&
+                result.layers?.ai_model?.label === 'AI Image'
+            ) {
+                detectionMethod.textContent = 'AI Model + SynthID';
+            } else {
+                detectionMethod.textContent = 'AI Model';
+            }
         } else if (result.layers?.synthid?.status === 'complete' && result.layers?.synthid?.is_watermarked) {
             detectionMethod.textContent = 'SynthID';
-        } else if (result.layers?.ai_model?.status === 'complete') {
-            detectionMethod.textContent = 'AI Model';
         } else {
             detectionMethod.textContent = 'Multi-Layer';
         }
